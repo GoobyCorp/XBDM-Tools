@@ -14,7 +14,6 @@ from collections import OrderedDict
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
 from datetime import datetime, timedelta, tzinfo
-from binascii import unhexlify, hexlify as _hexlify
 from ctypes import Structure, Union, c_ulong, c_int32, c_uint64, c_int64
 
 # constants
@@ -29,6 +28,9 @@ XBDM_PORT = 730
 
 # config variables
 CONFIG_FILE = "config.json"
+
+# JRPC2 variables - Byrom
+JRPC2_CONFIG_FILE = "jrpc2_config.json"
 
 # time variables
 EPOCH_AS_FILETIME = 116444736000000000
@@ -78,9 +80,6 @@ class FileInfo(Structure):
         ("FileAttributes", c_uint32)
     ]
 
-def hexlify(b: (bytes, bytearray)) -> str:
-    return str(_hexlify(b), "utf8")
-
 def list_dirs(path: str) -> (list, tuple):
     return next(walk(path))[1]
 
@@ -105,16 +104,16 @@ def bswap32(b: (bytes, bytearray)) -> (bytes, bytearray):
 
 def uint32_to_uint64(low: (str, int), high: (str, int)) -> int:
     if isinstance(low, str):
-        low = unpack("!I", unhexlify(low.replace("0x", "")))[0]
+        low = unpack("!I", bytes.fromhex(low.replace("0x", "")))[0]
     if isinstance(high, str):
-        high = unpack("!I", unhexlify(high.replace("0x", "")))[0]
+        high = unpack("!I", bytes.fromhex(high.replace("0x", "")))[0]
     return unpack("<Q", pack("<II", low, high))[0]
 
 def uint64_to_uint32(num: int, as_hex: bool = False, as_bytes: bool = False) -> (tuple, list):
     i = unpack("<II", pack("<Q", num))
     if as_hex:
-        low = "0x" + hexlify(pack("!I", i[0]))
-        high = "0x" + hexlify(pack("!I", i[1]))
+        low = "0x" + pack("!I", i[0]).hex()
+        high = "0x" + pack("!I", i[1]).hex()
         if as_bytes:
             return [bytes(low, "utf8"), bytes(high, "utf8")]
         return [low, high]
@@ -228,7 +227,7 @@ class XBDMCommand(object):
         if quoted:
             value = "\"" + value + "\""
         if isinstance(value, int):
-            value = "0x" + hexlify(pack(">I", value))
+            value = "0x" + pack(">I", value).hex()
         self.args[key] = value
 
     def get_param(self, key: str, lc_check: bool = False) -> (None, str):
@@ -271,12 +270,24 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                 if cfg["debug"]:
                     print(raw_command)
                 parsed = XBDMCommand.parse(format_command(raw_command))
-                #print(parsed.name)
-                #print(parsed.args)
-                #print(parsed.flags)
                 if parsed.name == "BOXID":
                     print("Sending box ID...")
                     self.send(b"420- box is not locked\r\n")
+                elif parsed.name == "xbupdate!drawtext":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "xbupdate!version":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "xbupdate!validatehddpartitions":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "xbupdate!isflashclean":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "xbupdate!instrecoverytype":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "xbupdate!validdevice":
+                    self.send(b"200- OK\r\n")
+                elif parsed.name == "recovery":
+                    print("Booting recovery...")
+                    self.send(b"200- OK\r\n")
                 elif parsed.name == "DBGNAME":
                     print("Sending console name...")
                     self.send(b"200- " + bytes(cfg["console_name"], "utf8") + b"\r\n")
@@ -284,19 +295,75 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                     print("Sending console type...")
                     self.send(b"200- " + bytes(cfg["console_type"], "utf8") + b"\r\n")
                 elif parsed.name == "consolefeatures":
-                    print("Sending console features...")
-                    if parsed.param_exists("params"):  #extended query
-                        print("Feature Params: " + parsed.get_param("params"))
-                        self.send(b"200- S_OK\r\n")
-                    else:  #simple query
-                        self.send(b"200- " + bytes(cfg["console_type"], "utf8") + b"\r\n")
+                    # Basic JRPC2 Support - Byrom
+                    if parsed.param_exists("ver") and parsed.param_exists("type"): # is jrpc2 command
+                        type_param = int(parsed.get_param("type"))
+                        # type 0 to 8 are related to call function by the look of it
+                        #if type_param == "1": # example when loading a plugin
+                        #    print("JRPC2 - One of the call function commands received! Responding...")
+                        #    self.send(b"200- 0\r\n") # 0 for load success
+                        if type_param == 9:
+                            print("JRPC2 - Resolve function command received! Responding...")
+                            self.send(b"200- 80067F48\r\n") # address of the requested function
+                        elif type_param == 10:
+                            print("JRPC2 - Get CPUKey command received! Responding...")
+                            self.send(b"200- " + bytes(jrpc2cfg["CPUKey"], "utf8") + b"\r\n")
+                        elif type_param == 11:
+                            print("JRPC2 - Shutdown console command received! Responding...")
+                            self.send(b"200- S_OK\r\n")
+                        elif type_param == 12:
+                            print("JRPC2 - XNotify command received! Responding...")
+                            # consolefeatures ver=2 type=12 params=\"A\0\A\2\2/37\53696D706C6520546F6F6C20436F6E6E656374656420546F20596F7572205472696E697479\1\34\"
+                            # 53696D706C6520546F6F6C20436F6E6E656374656420546F20596F7572205472696E697479 -> HexToText = Simple Tool Connected To Your Trinity
+                            self.send(b"200- S_OK\r\n")
+                        elif type_param == 13:
+                            print("JRPC2 - Get Kern Version command received! Responding...")
+                            self.send(b"200- " + bytes(jrpc2cfg["KernelVers"], "utf8") + b"\r\n")
+                        elif type_param == 14:
+                            print("JRPC2 - Set ROL LED command received! Responding...") # multple options for this green red orange topleft topright bottomleft bottomright
+                            self.send(b"200- S_OK\r\n")
+                        elif type_param == 15:
+                            gettemp_params = parsed.get_param("params")
+                            print(gettemp_params)
+                            if gettemp_params == "A\\0\\A\\1\\1\\0\\":
+                                print("JRPC2 - Get CPU Temperature command received! Responding...")
+                                self.send(b"200- " + bytes(hex(jrpc2cfg["CPUTemp"]).replace("0x",""), "utf8") + b"\r\n")
+                            elif gettemp_params == "A\\0\\A\\1\\1\\1\\":
+                                print("JRPC2 - Get GPU Temperature command received! Responding...")
+                                self.send(b"200- " + bytes(hex(jrpc2cfg["GPUTemp"]).replace("0x",""), "utf8") + b"\r\n")
+                            elif gettemp_params == "A\\0\\A\\1\\1\\2\\":
+                                print("JRPC2 - Get EDRAM Temperature command received! Responding...")
+                                self.send(b"200- " + bytes(hex(jrpc2cfg["EDRAMTemp"]).replace("0x",""), "utf8") + b"\r\n")
+                            elif gettemp_params == "A\\0\\A\\1\\1\\3\\":
+                                print("JRPC2 - Get MOBO Temperature command received! Responding...")
+                                self.send(b"200- " + bytes(hex(jrpc2cfg["MOBOTemp"]).replace("0x",""), "utf8") + b"\r\n")
+                        elif type_param == 16:
+                            print("JRPC2 - Get TitleID command received! Responding...")
+                            self.send(b"200- " + bytes(jrpc2cfg["TitleID"], "utf8") + b"\r\n")
+                        elif type_param == 17:
+                            print("JRPC2 - Get Mobo Type command received! Responding...")
+                            self.send(b"200- " + bytes(jrpc2cfg["MoboType"], "utf8") + b"\r\n")
+                        elif type_param == 18:
+                            print("JRPC2 - Constant memory setting command received! Responding...")
+                            self.send(b"200- S_OK\r\n")
+                        else:
+                            print("JRPC2 - Unknown command received! Responding...") # catch any unknowns
+                            self.send(b"200- 0\r\n") # better than nothing / is the return when load plugin is called
+                    # end of jrpc2 commands        
+                    else:
+                        print("Sending console features...")
+                        if parsed.param_exists("params"):  #extended query
+                            print("Feature Params: " + parsed.get_param("params"))
+                            self.send(b"200- S_OK\r\n")
+                        else:  #simple query
+                            self.send(b"200- " + bytes(cfg["console_type"], "utf8") + b"\r\n")
                 elif parsed.name == "advmem" and parsed.flag_exists("status"):
                     print("Sending memory properties...")
                     self.send(b"200- enabled\r\n")
                 elif parsed.name == "ALTADDR":
                     print("Sending title IP address...")
-                    addr = _hexlify(bytes(map(int, cfg["alternate_address"].split('.')))).lower()
-                    self.send(b"200- addr=0x" + addr + b"\r\n")
+                    addr = bytes(map(int, cfg["alternate_address"].split('.'))).hex()
+                    self.send(b"200- addr=0x" + bytes(addr, "UTF8") + b"\r\n")
                 elif parsed.name == "SYSTIME":
                     print("Sending system time...")
                     (time_low, time_high) = uint64_to_uint32(system_time(), True)
@@ -401,7 +468,7 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                             print("Attempted to configure KDNET to talk to %s:%s..." % (kdnet_addr, kdnet_port))
                             self.send(b'200- kdnet set succeeded.\r\n')
                     elif parsed.flag_exists("show"):  # show settings
-                        self.send(b'200- kdnet settings:\x1e\tEnable=1\x1e\tTarget IP: 192.168.0.43\x1e\tTarget MAC: 00-25-AE-E4-43-87\x1e\tHost IP: 192.168.0.2\x1e\tHost Port: 50001\x1e\tEncrypted: 0\x1e\r\n')
+                        self.send(b'200- kdnet settings:\x1E\tEnable=1\x1E\tTarget IP: 192.168.0.43\x1E\tTarget MAC: 00-25-AE-E4-43-87\x1E\tHost IP: 192.168.0.2\x1E\tHost Port: 50001\x1E\tEncrypted: 0\x1E\r\n')
                 elif parsed.name == "DEBUGGER":
                     if parsed.flag_exists("DISCONNECT"):
                         print("Debugger disconnecting...")
@@ -492,7 +559,8 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                         physical_path = xbdm_to_local_path(parsed.get_param("NAME"))
                         if isfile(physical_path):
                             print("Sending file @ \"%s\"..." % (physical_path))
-                            data = open(physical_path, "rb").read()
+                            with open(physical_path, "rb") as f:
+                                data = f.read()
                             self.send(b"203- binary response follows\r\n")
                             self.send(pack("<I", len(data)))
                             self.send(data)
@@ -502,10 +570,18 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                         print("Receiving %s file(s)..." % (file_count))
                         if file_count > 0:
                             self.send(b"204- send binary data\r\n")
-                            self.receiving_files = True
+                            #self.receiving_files = True
                             self.num_files = file_count
                             self.num_files_left = file_count
                             self.file_step = 0
+                            self.send(b"203- binary response follows\r\n")
+                            self.send((b"\x00" * 4) * self.num_files)
+                elif parsed.name == "SENDFILE":
+                    print("Receiving single file...")
+                    self.send(b"204- send binary data\r\n")
+                    #self.receiving_files = True
+                    self.send(b"203- binary response follows\r\n")
+                    self.send((b"\x00" * 4))
                 elif parsed.name == "RENAME":
                     if parsed.param_exists("NAME") and parsed.param_exists("NEWNAME"):
                         old_file_path = xbdm_to_local_path(parsed.get_param("NAME"))
@@ -528,20 +604,20 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                     if parsed.param_exists("addr") and parsed.param_exists("data"):
                         print(parsed.get_param("addr"))
                         setmem_addr = parsed.get_param("addr")
-                        setmem_data = unhexlify(parsed.get_param("data"))
+                        setmem_data = bytes.fromhex(parsed.get_param("data"))
                         print("Attempted to set %s byte(s) @ %s..." % (len(setmem_data), setmem_addr))
-                        self.send(b"200- set " + bytes(str(len(setmem_data)), "utf8") + b" bytes\r\n")
+                        self.send(b"200- set " + bytes(str(len(setmem_data)), "UTF8") + b" bytes\r\n")
                 elif parsed.name == "GETMEM" or parsed.name == "GETMEMEX":
                     if parsed.param_exists("ADDR") and parsed.param_exists("LENGTH"):
                         addr = parsed.get_param("ADDR")
                         length = parsed.get_param("LENGTH")
-                        length = unpack("!I", unhexlify(length.replace("0x", "")))[0]
+                        length = unpack("!I", bytes.fromhex(length.replace("0x", "")))[0]
                         print("Attempted to get %s byte(s) @ %s..." % (length, addr))
                         self.send(b"203- binary response follows\r\n")
-                        self.send(b"\x00\x04" + (b"suckcock" * 128))
-                        self.send(b"\x00\x04" + (b"suckcock" * 128))
-                        self.send(b"\x00\x04" + (b"suckcock" * 128))
-                        self.send(b"\x00\x84" + (b"suckcock" * 128))
+                        self.send(pack("<H", 1024) + (b"suckcock" * 128))
+                        self.send(pack("<H", 1024) + (b"suckcock" * 128))
+                        self.send(pack("<H", 1024) + (b"suckcock" * 128))
+                        self.send(pack("<H", 1024) + (b"suckcock" * 128))
                 elif parsed.name == "setsystime":
                     if parsed.param_exists("clocklo") and parsed.param_exists("clockhi") and parsed.param_exists("tz"):
                         sys_time_low = parsed.get_param("clocklo")
@@ -590,9 +666,10 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                 else:
                     if parsed.name is not None:
                         print("UNHANDLED COMMAND: " + parsed.name)
-            elif raw_command == unhexlify("020405B40103030801010402"):
+            elif raw_command == bytes.fromhex("020405B40103030801010402"):
                 print("Sending unknown?")
                 self.send(raw_command)
+            """
             elif self.receiving_files:
                 if self.num_files_left > 0 and self.file_step == 0:
                     #receive file header
@@ -636,6 +713,7 @@ class XBDMHandler(asyncore.dispatcher_with_send):
                     self.send((b"\x00" * 4) * self.num_files)
                     self.num_files = 0
                     self.receiving_files = False
+            """
 
 class XBDMServer(asyncore.dispatcher):
     def __init__(self):
@@ -661,5 +739,20 @@ if __name__ == "__main__":
     else:
         cfg = {"xbdm_dir": "XBDM"}
         dump(cfg, open(CONFIG_FILE, "w"))
+
+    if isfile(JRPC2_CONFIG_FILE):
+        jrpc2cfg = load(open(JRPC2_CONFIG_FILE, "r"))
+    else:
+        jrpc2cfg = {"MoboType": "Trinity",
+        "CPUKey": "13371337133713371337133713371337",
+        "KernelVers": "17559",
+        "TitleID": "FFFE07D1",
+        "CPUTemp": 45,
+        "GPUTemp": 44,
+        "EDRAMTemp": 43,
+        "MOBOTemp": 39
+        }
+        dump(jrpc2cfg, open(JRPC2_CONFIG_FILE, "w"))
+
     server = XBDMServer()
     asyncore.loop()

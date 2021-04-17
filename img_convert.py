@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from io import BytesIO
 from struct import pack, unpack
 

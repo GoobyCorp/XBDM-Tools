@@ -1,0 +1,11 @@
+/.idea
+/.vs
+/lib
+/DRIVES
+
+/*.bin
+/*.png
+/*.bmp
+/*.pcapng
+/*.dds
+/*.xex
