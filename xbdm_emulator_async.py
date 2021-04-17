@@ -2,11 +2,8 @@
 
 import socket
 import asyncore
-from math import floor
-from io import BytesIO
 from shlex import shlex
 from shutil import rmtree
-from ctypes import c_uint32
 from json import load, dump
 from calendar import timegm
 from struct import unpack, pack
@@ -14,7 +11,7 @@ from collections import OrderedDict
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
 from datetime import datetime, timedelta, tzinfo
-from ctypes import Structure, Union, c_ulong, c_int32, c_uint64, c_int64
+from ctypes import Structure, Union, c_ulong, c_uint32, c_int32, c_uint64, c_int64
 
 # constants
 D3DFMT_A8R8G8B8 = 0x18280186
