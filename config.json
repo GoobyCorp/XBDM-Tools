@@ -1,7 +1,7 @@
 {
   "debug": true,
   "xbdm_dir": "DRIVES",
-  "username": "DESKTOP-4UTHFCT",
+  "username": "DESKTOP-XXXXXXX",
   "console_name": "XDK",
   "console_type": "DevKit",
   "console_features": "DEBUGGING 1GB_RAM",
@@ -16,11 +16,6 @@
   "screenshot_file": "screenshot.bin",
   "alternate_address": "1.2.3.4",
   "modules": [
-    {"name": "fuckoff.xex", "base": 4919, "size": 4096},
-    {"name": "suckmyass.xex", "base": 4919, "size": 4096},
-    {"name": "eatshit.xex", "base": 4919, "size": 4096},
-    {"name": "killyourself.xex", "base": 4919, "size": 4096},
-    {"name": "meatspin.xex", "base": 4919, "size": 4096},
-    {"name": "lemonparty.xex", "base": 4919, "size": 4096}
+    {"name": "fuckoff.xex", "base": 4919, "size": 4096}
   ]
 }
