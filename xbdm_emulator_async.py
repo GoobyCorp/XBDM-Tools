@@ -2,12 +2,12 @@
 
 import asyncio
 from io import BytesIO
-from typing import Any
 from shlex import shlex
 from shutil import rmtree
 from json import load, dump
 from calendar import timegm
 from struct import unpack, pack
+from typing import Any, BinaryIO
 from collections import OrderedDict
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
@@ -251,7 +251,7 @@ class XBDMCommand(object):
 	def add_flag(self, key: str) -> Any:
 		return self.flags.append(key.lower())
 
-	def add_param(self, key: str, value: str | int | bytes | bytearray, quoted: bool = False) -> None:
+	def add_param(self, key: str, value: str | int | bytes | bytearray, quoted: bool = False) -> XBDMParam:
 		key = key.lower()
 		if isinstance(value, bytes) or isinstance(value, bytearray):
 			value = str(value, "utf8")
@@ -260,6 +260,7 @@ class XBDMCommand(object):
 		if isinstance(value, int):
 			value = "0x" + pack(">I", value).hex()
 		self.args[key] = value
+		return XBDMParam(value)
 
 	def get_param(self, key: str, lc_check: bool = False) -> XBDMParam:
 		key = key.lower()
@@ -280,14 +281,13 @@ class XBDMCommand(object):
 		return out_str
 
 class XBDMServerProtocol(asyncio.Protocol):
-	receiving_files = False
-	num_files = 0
-	num_files_left = 0
-	file_data = b""
-	file_data_left = 0
-	file_size = 0
-	file_path = ""
-	file_step = 0
+	# file transfer variables
+	receiving_files: bool = False
+	num_files_total: int = 0
+	num_files_left: int = 0
+	file_data_left: int = 0
+	file_path: str = ""
+	file_handle: BinaryIO | None = None
 
 	client_addr: str = None
 	client_port: int = None
@@ -322,14 +322,15 @@ class XBDMServerProtocol(asyncio.Protocol):
 		self.send_single_line("201- connected")
 
 	def connection_lost(self, ex):
+		# print(ex)
 		# print(f"Lost connection to {self.client_addr}:{self.client_port}")
 		self.transport.close()
 
-	def eof_received(self) -> bool | None:
+	def eof_received(self) -> bool:
 		self.transport.close()
+		return True
 
 	def data_received(self, raw_command: bytes) -> None:
-		# raw_command = self.recv(2048)
 		if raw_command:
 			if raw_command.endswith(b"\r\n") and not self.receiving_files:
 				if cfg["debug"]:
@@ -480,7 +481,6 @@ class XBDMServerProtocol(asyncio.Protocol):
 						# read and send the file
 						data = f.read()
 
-
 					with XBDMCommand() as cmd:
 						cmd.add_param("pitch", p)
 						cmd.add_param("width", ow)
@@ -629,12 +629,11 @@ class XBDMServerProtocol(asyncio.Protocol):
 						print(f"Receiving {file_count} file(s)...")
 						if file_count > 0:
 							self.send_single_line("204- send binary data")
-							self.receiving_files = True
-							self.num_files = file_count
+							self.num_files_total = file_count
 							self.num_files_left = file_count
-							self.file_step = 0
+							self.receiving_files = True
 							self.send_single_line("203- binary response follows")
-							self.transport.write((b"\x00" * 4) * self.num_files)
+							self.transport.write((b"\x00" * 4) * self.num_files_total)
 				elif parsed.name == "sendfile":
 					print("Receiving single file...")
 					self.send_single_line("203- binary response follows")
@@ -677,8 +676,8 @@ class XBDMServerProtocol(asyncio.Protocol):
 						self.transport.write(pack("<H", 1024) + (b"suckcock" * 128))
 				elif parsed.name == "setsystime":
 					if parsed.param_exists("clocklo") and parsed.param_exists("clockhi") and parsed.param_exists("tz"):
-						sys_time_low = parsed.get_param("clocklo")
-						sys_time_high = parsed.get_param("clockhi")
+						sys_time_low = parsed.get_param("clocklo").as_int()
+						sys_time_high = parsed.get_param("clockhi").as_int()
 						#timezone = bool(parsed.get_param("tz"))
 						sys_time = uint32_to_uint64(sys_time_low, sys_time_high)
 						print(f"Setting system time to {sys_time}...")
@@ -721,7 +720,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					print("Sending user privilege")
 					self.send_single_line("402- file not found")
 				elif parsed.name == "bye":
-					print("Closing the socket...")
+					# print("Closing the socket...")
 					self.send_single_line("200- bye")
 					self.transport.close()
 				else:
@@ -731,43 +730,51 @@ class XBDMServerProtocol(asyncio.Protocol):
 				print("Sending unknown?")
 				self.transport.write(raw_command)
 			elif self.receiving_files:
-				if self.num_files_left > 0 and self.file_step == 0:
+				if self.num_files_left > 0 and self.file_handle is None and self.file_data_left == 0:
 					# print("Size:", len(raw_command))
 					# print(raw_command.hex())
 					#receive file header
 					with BytesIO(raw_command) as bio:
-						header_size = unpack("!I", bio.read(4))[0]
+						(header_size,) = unpack(">I", bio.read(4))
 						# print("Header Size:", header_size)
 						header = bio.read(header_size - 4)  # exclude header size
-						(createhi, createlo, modifyhi, modifylo, file_size_hi, file_size_lo, file_attrbs) = unpack("!IIIIIIL", header[:28])
+						(create_hi, create_lo, modify_hi, modify_lo, file_size_hi, file_size_lo, file_attrbs) = unpack(">6IL", header[:28])
 
-						self.file_size = uint32_to_uint64(file_size_lo, file_size_hi)
+						file_size = uint32_to_uint64(file_size_lo, file_size_hi)
 						self.file_path = xbdm_to_local_path(header[28:-1].decode("UTF8"))
-						self.file_data += bio.read()
-						self.file_data_left = self.file_size - len(self.file_data)
 
-					self.file_step = 1
-				elif self.file_step == 1 and self.num_files_left > 0 and len(self.file_data) > 0 and self.file_data_left > 0:
-					self.file_data += raw_command
-					self.file_data_left -= len(raw_command)
+						self.file_handle = open(self.file_path, "wb")
+						self.file_handle.write(bio.read())
+
+						self.file_data_left = file_size - self.file_handle.tell()
+				elif self.num_files_left > 0 and self.file_handle is not None and self.file_data_left > 0:
+					if self.file_data_left < len(raw_command):  # fragmented packet
+						self.file_handle.write(raw_command[:self.file_data_left])
+
+						self.file_handle.close()
+						self.file_handle = None
+						self.num_files_left -= 1
+						self.file_path = ""
+						raw_command = raw_command[self.file_data_left:]
+						self.file_data_left = 0
+						# send to data_received to process the packet
+						self.data_received(raw_command)
+						return
+					else:  # unfragmented packet
+						self.file_handle.write(raw_command)
+						self.file_data_left -= len(raw_command)
 
 				if self.file_data_left == 0:
-					print(f"File written to \"{self.file_path}\"...")
-					with open(self.file_path, "wb") as f:
-						f.write(self.file_data)
-
-					self.file_step = 0
+					self.file_handle.close()
+					self.file_handle = None
 					self.num_files_left -= 1
 					self.file_data_left = 0
-					self.file_size = 0
 					self.file_path = ""
-					self.file_data = b""
 
 				if self.num_files_left == 0:
-					print(f"{self.num_files} file transfer(s) complete!")
 					self.send_single_line("203- binary response follows")
-					self.transport.write((b"\x00" * 4) * self.num_files)
-					self.num_files = 0
+					self.transport.write((b"\x00" * 4) * self.num_files_total)
+					self.num_files_total = 0
 					self.receiving_files = False
 
 async def run_server():
