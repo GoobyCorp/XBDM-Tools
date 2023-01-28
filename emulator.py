@@ -481,6 +481,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					elif parsed.param_exists("size"):  # receiving file
 						file_size = parsed.get_param("size").as_int()
 						print(f"Receiving single file \"{file_name}\" (0x{file_size:X})...")
+						print(f"0x{parsed.get_param('crc').as_int():X}")
 						self.send_single_line("204- send binary data")
 						self.file_data_left = file_size
 						self.file_cksm = parsed.get_param("crc").as_int()
@@ -1002,6 +1003,7 @@ def main() -> int:
 		}
 		dump(jrpc2cfg, open(JRPC2_CONFIG_FILE, "w"))
 
+	print(f"XBDM emulator running on 0.0.0.0:{XBDM_PORT}!")
 	asyncio.run(run_server())
 
 	return 0
