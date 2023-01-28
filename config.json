@@ -15,7 +15,6 @@
   "screenshot_file": "screenshot.bin",
   "alternate_address": "1.2.3.4",
   "modules": [
-    {"name": "fuckoff.xex", "base": 4919, "size": 4096},
-    {"name": "cuminme.xex", "base":  6969, "size": 1}
+    {"name": "fuckoff.xex", "base": 4919, "size": 4096}
   ]
 }
