@@ -2,7 +2,6 @@
 
 import re
 import asyncio
-from zlib import crc32
 from typing import Any
 from shlex import shlex
 from pathlib import Path
