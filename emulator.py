@@ -973,7 +973,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 				self.num_files_total = 0
 				self.receiving_files = False
 
-async def run_server():
+async def xbdm_emulator_server():
 	loop = asyncio.get_running_loop()
 	server = await loop.create_server(XBDMServerProtocol, "0.0.0.0", XBDM_PORT)
 	async with server:
@@ -1004,7 +1004,7 @@ def main() -> int:
 		dump(jrpc2cfg, open(JRPC2_CONFIG_FILE, "w"))
 
 	print(f"XBDM emulator running on 0.0.0.0:{XBDM_PORT}!")
-	asyncio.run(run_server())
+	asyncio.run(xbdm_emulator_server())
 
 	return 0
 
