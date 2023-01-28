@@ -181,4 +181,4 @@ class XBDMResult(object):
     E_INVALIDARG = [0x80070057, "bad parameter"]
 
 if __name__ == "__main__":
-    print(hex(hresult_to_code(0x82DA0101)))
+    print(hex(code_to_hsuccess(406)))

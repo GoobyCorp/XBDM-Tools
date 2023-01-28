@@ -2,6 +2,7 @@
 /.vs
 /lib
 /DRIVES
+/DEVICES
 
 /*.bin
 /*.png

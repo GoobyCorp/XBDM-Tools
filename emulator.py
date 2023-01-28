@@ -1,14 +1,16 @@
 #!/usr/bin/python3
 
+import re
 import asyncio
 from io import BytesIO
 from shlex import shlex
+from enum import IntEnum
+from pathlib import Path
 from shutil import rmtree
 from json import load, dump
 from calendar import timegm
 from struct import unpack, pack
 from typing import Any, BinaryIO
-from collections import OrderedDict
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
 from datetime import datetime, timedelta, tzinfo
@@ -23,6 +25,7 @@ c_dword = c_ulong
 
 # xbdm variables
 XBDM_PORT = 730
+XBDM_DIR = "DEVICES"
 
 # config variables
 CONFIG_FILE = "config.json"
@@ -39,6 +42,9 @@ HOUR = timedelta(hours=1)
 # config
 cfg: list | dict = {}
 jrpc2cfg: list | dict = {}
+
+# regex
+CODE_EXP = re.compile(r"^(\d+)-")
 
 # Responses from the console are high to low
 # PC data is read from low to high
@@ -82,6 +88,12 @@ class FileInfo(Structure):
 		("FileAttributes", c_uint32)
 	]
 
+class ReceiveFileType(IntEnum):
+	NONE = 0
+	XBUPDATE_SINGLE = 1
+	SENDFILE_SINGLE = 2
+	SENDVFILE_MULTIPLE = 3
+
 def list_dirs(path: str) -> tuple | list:
 	return next(walk(path))[1]
 
@@ -89,10 +101,28 @@ def list_files(path: str) -> tuple | list:
 	return next(walk(path))[2]
 
 def list_drives() -> (list, tuple):
-	return list_dirs(cfg["xbdm_dir"])
+	return list_dirs("DEVICES/Harddisk0/Partition1/")
 
 def xbdm_to_local_path(path: str) -> str:
-	return join(cfg["xbdm_dir"], path.replace(":\\", "/").replace("\\", "/")).replace("\\", "/")
+	p = Path("DEVICES/Harddisk0/Partition1/")
+	p /= path.replace(":\\", "/").replace("\\", "/")
+	p = p.absolute()
+	p.parent.mkdir(parents=True, exist_ok=True)
+	return str(p)
+
+	# return join("DEVICES/Harddisk0/Partition1/", path.replace(":\\", "/").replace("\\", "/")).replace("\\", "/")
+
+def xbdm_to_device_path(path: str) -> str:
+	if path.startswith("\\Device\\"):
+		path = path[len("\\Device\\"):]
+	elif path.startswith("\\"):
+		path = path[1:]
+
+	p = Path(XBDM_DIR)
+	p /= path.replace(":\\", "/").replace("\\", "/")
+	p = p.absolute()
+	p.parent.mkdir(parents=True, exist_ok=True)
+	return str(p)
 
 def format_command(command: bytes | bytearray, lowercase: bool = False):
 	command =  command.decode("utf8").rstrip()
@@ -167,6 +197,7 @@ class UTC(tzinfo):
 
 class XBDMShlex(shlex):
 	def __init__(self, *args, **kwargs):
+		kwargs["posix"] = True
 		super(XBDMShlex, self).__init__(*args, **kwargs)
 		self.escape = ""  #remove the \ escape
 		self.whitespace_split = True
@@ -190,8 +221,11 @@ class XBDMParam:
 	def as_int(self) -> int:
 		if isinstance(self.value, str):
 			if self.value.startswith("0x"):
-				return unpack(">I", bytes.fromhex(self.value[2:]))[0]
+				return int.from_bytes(bytes.fromhex(self.value[2:].rjust(8, "0")), "big")
 		return int(self.value)
+
+	def as_bool(self) -> bool:
+		return self.as_str().lower() in ["true", "1"]
 
 	def as_str(self) -> str:
 		return str(self.value)
@@ -199,9 +233,10 @@ class XBDMParam:
 	def as_bytes(self) -> bytes:
 		return bytes.fromhex(self.value)
 
-class XBDMCommand(object):
+class XBDMCommand:
 	name = None
-	args = OrderedDict()
+	code = 0
+	args = dict()
 	flags = []
 	formatted = None
 
@@ -216,31 +251,43 @@ class XBDMCommand(object):
 
 	def reset(self) -> None:
 		self.name = None
-		self.args = OrderedDict()
+		self.code = 0
+		self.args = dict()
 		self.flags = []
 		self.formatted = None
 
 	@staticmethod
 	def parse(command: str):
-		sh = XBDMShlex(command, posix=True)
+		sh = XBDMShlex(command)
 		command = list(sh)
 		cmd = XBDMCommand()
-		cmd.set_name(command[0])
+		match = CODE_EXP.match(command[0])
+		if match:  # response
+			cmd.set_code(int(match.group(1)))
+		else:  # command
+			cmd.set_name(command[0])
 		if len(command) > 1:
 			for single in command[1:]:
 				if "=" in single:
 					(key, value) = single.split("=", 1)
-					cmd.add_param(key, value)
+					cmd.set_param(key, value)
 				else:
 					if not cmd.flag_exists(single):
-						cmd.add_flag(single)
+						cmd.set_flag(single)
 		return cmd
 
 	def set_name(self, name: str) -> None:
-		self.name = name.lower()
+		self.name = name
 
-	def set_response_code(self, code: int) -> None:
-		self.name = str(code) + "-"
+	def set_code(self, code: int) -> None:
+		# self.name = str(code) + "-"
+		self.code = code
+
+	def get_code(self) -> int:
+		return self.code
+
+	def get_flags(self) -> list[str]:
+		return self.flags
 
 	def flag_exists(self, key: str) -> bool:
 		return key.lower() in self.flags
@@ -248,19 +295,26 @@ class XBDMCommand(object):
 	def param_exists(self, key: str, lc_check: bool = False) -> bool:
 		return not self.get_param(key, lc_check).is_none()
 
-	def add_flag(self, key: str) -> Any:
+	def set_flag(self, key: str) -> Any:
 		return self.flags.append(key.lower())
 
-	def add_param(self, key: str, value: str | int | bytes | bytearray, quoted: bool = False) -> XBDMParam:
+	def set_param(self, key: str, value: str | int | bytes | bytearray | bool, quoted: bool = False) -> XBDMParam:
 		key = key.lower()
 		if isinstance(value, bytes) or isinstance(value, bytearray):
-			value = str(value, "utf8")
-		if quoted:
+			value = value.decode("UTF8")
+		elif quoted:
 			value = "\"" + value + "\""
-		if isinstance(value, int):
-			value = "0x" + pack(">I", value).hex()
+		elif isinstance(value, str):
+			value = value
+		elif isinstance(value, int):
+			value = "0x" + value.to_bytes(4, "big").hex()
+		elif isinstance(value, bool):
+			value = "1" if value else "0"
 		self.args[key] = value
 		return XBDMParam(value)
+
+	def get_params(self) -> dict:
+		return self.args
 
 	def get_param(self, key: str, lc_check: bool = False) -> XBDMParam:
 		key = key.lower()
@@ -270,27 +324,65 @@ class XBDMCommand(object):
 		return XBDMParam(val)
 
 	def get_output(self, as_bytes: bool = False, line_ending: bool = True) -> str | bytes | bytearray:
-		out_str = " ".join([(key + "=" + value) for (key, value) in self.args.items()])
-		if self.name is not None:
-			out_str = self.name + " " + out_str
+		o = ""
+		if self.name is not None:  # commands only
+			o = self.name
+		if self.code is not None and self.code != 0:  # replies only
+			o = str(self.code) + "-"
+		if len(self.args) > 0:
+			o += " "
+			o += " ".join([(key + "=" + value) for (key, value) in self.args.items()])
+		if len(self.flags) > 0:
+			o += " "
+			o += " ".join(self.flags)
 		if line_ending:
-			out_str += "\r\n"
+			o += "\r\n"
 		if as_bytes:
-			return bytes(out_str, "utf8")
-		self.reset()
-		return out_str
+			return o.encode("UTF8")
+		# self.reset()
+		return o
 
 class XBDMServerProtocol(asyncio.Protocol):
 	# file transfer variables
+	# single file
+	receiving_file: bool = False
+	file_cksm: int = 0
+
+	# multiple files
 	receiving_files: bool = False
 	num_files_total: int = 0
 	num_files_left: int = 0
 	file_data_left: int = 0
+
+	# both
+	receiving_type: ReceiveFileType = ReceiveFileType.NONE
 	file_path: str = ""
 	file_handle: BinaryIO | None = None
 
+	# client connection info
 	client_addr: str = None
 	client_port: int = None
+
+	def reset(self) -> None:
+		# file transfer variables
+		# single file
+		self.receiving_file = False
+		self.file_cksm = 0
+
+		# multiple files
+		self.receiving_files = False
+		self.num_files_total = 0
+		self.num_files_left = 0
+		self.file_data_left = 0
+
+		# both
+		self.receiving_type = ReceiveFileType.NONE
+		self.file_path = ""
+		self.file_handle = None
+
+		# client connection info
+		self.client_addr = None
+		self.client_port = None
 
 	def send_single_line(self, line: str | bytes | bytearray) -> None:
 		if isinstance(line, str):
@@ -316,6 +408,8 @@ class XBDMServerProtocol(asyncio.Protocol):
 			self.end_multi_line()
 
 	def connection_made(self, transport: asyncio.ReadTransport | asyncio.WriteTransport):
+		self.reset()
+
 		(self.client_addr, self.client_port) = transport.get_extra_info("peername")
 		print(f"Incoming connection from {self.client_addr}:{self.client_port}")
 		self.transport = transport
@@ -324,44 +418,114 @@ class XBDMServerProtocol(asyncio.Protocol):
 	def connection_lost(self, ex):
 		# print(ex)
 		# print(f"Lost connection to {self.client_addr}:{self.client_port}")
-		self.transport.close()
+		# self.transport.close()
+		# self.transport = None
+		pass
 
 	def eof_received(self) -> bool:
 		self.transport.close()
+		self.transport = None
 		return True
 
 	def data_received(self, raw_command: bytes) -> None:
-		if raw_command:
-			if raw_command.endswith(b"\r\n") and not self.receiving_files:
-				if cfg["debug"]:
-					print(bytes(raw_command))
-					print(raw_command.hex().upper())
-				parsed = XBDMCommand.parse(format_command(raw_command))
-				if parsed.name == "boxid":
+		if not raw_command:
+			return
+
+		if raw_command.endswith(b"\r\n") and not (self.receiving_file or self.receiving_files):
+			if cfg["debug"]:
+				print(bytes(raw_command))
+				print(raw_command.hex().upper())
+			parsed = XBDMCommand.parse(format_command(raw_command))
+			match parsed.name.lower():
+				case "boxid":
 					print("Sending box ID...")
 					self.send_single_line("420- box is not locked")
-				elif parsed.name == "xbupdate!drawtext":
+				case "xbupdate!drawtext":
 					self.send_single_line("200- OK")
-				elif parsed.name == "xbupdate!version":
+					print("xbupdate!drawtext")
+				case "xbupdate!version":
+					self.send_single_line("200- verhi=0x20000 verlo=0x53080012 platform=wi basesysversion=0x20445100 cursysversion=0x20445100 recstate=0x1")
+					print("xbupdate!version")
+				case "xbupdate!validatehddpartitions":
 					self.send_single_line("200- OK")
-				elif parsed.name == "xbupdate!validatehddpartitions":
+					print("xbupdate!validatehddpartitions")
+				case"xbupdate!isflashclean":
 					self.send_single_line("200- OK")
-				elif parsed.name == "xbupdate!isflashclean":
+					print("xbupdate!isflashclean")
+				case "xbupdate!instrecoverytype":
+					self.send_single_line("recoverytype=5 hresult=0x00000491")
+					print("xbupdate!instrecoverytype")
+				case "xbupdate!configure":
 					self.send_single_line("200- OK")
-				elif parsed.name == "xbupdate!instrecoverytype":
+					print("xbupdate!configure")
+				case "xbupdate!validdevice":
+					self.send_single_line("200- valid=1 deviceindex=1")
+					print("xbupdate!validdevice")
+				case "xbupdate!recovery":
 					self.send_single_line("200- OK")
-				elif parsed.name == "xbupdate!validdevice":
+					print("xbupdate!recovery")
+				case "xbupdate!sysfileupd":
+					print("xbupdate!sysfileupd")
+					file_name = parsed.get_param("name").as_str()
+					file_path = xbdm_to_device_path(file_name)
+					if parsed.param_exists("remove") and parsed.get_param("remove").as_bool():  # deleting file
+						print(f"Deleting file \"{file_name}\"...")
+						if isfile(file_path):
+							remove(file_path)
+						self.send_single_line("200- OK")
+					elif parsed.param_exists("removedir") and parsed.get_param("removedir").as_bool():  # deleting directory
+						print(f"Deleting directory \"{file_name}\"...")
+						if isdir(file_path):
+							rmtree(file_path, True)
+						self.send_single_line("200- OK")
+					elif parsed.param_exists("size"):  # receiving file
+						file_size = parsed.get_param("size").as_int()
+						print(f"Receiving single file \"{file_name}\" (0x{file_size:X})...")
+						self.send_single_line("204- send binary data")
+						self.file_data_left = file_size
+						self.file_cksm = parsed.get_param("crc").as_int()
+						self.receiving_file = True
+						self.receiving_type = ReceiveFileType.XBUPDATE_SINGLE
+						self.file_path = file_path
+					elif not parsed.param_exists("localsrc"):
+						print(f"Modifying file \"{file_name}\"...")
+						self.send_single_line("200- OK")
+					elif parsed.param_exists("localsrc"):
+						file_name_old = parsed.get_param("localsrc").as_str()
+						file_path_old = xbdm_to_device_path(file_name_old)
+						print(f"Modifying file \"{file_name_old}\" -> \"{file_name}\"...")
+						self.send_single_line("200- OK")
+				case "xbupdate!flash":
 					self.send_single_line("200- OK")
-				elif parsed.name == "recovery":
+					print("xbupdate!flash")
+				case "xbupdate!commitsysextramdisk":
+					self.send_single_line("200- result=0x10000000")
+					print("xbupdate!commitsysextramdisk")
+				case "xbupdate!getregion":
+					self.send_single_line("200- region=0xFF")
+					print("xbupdate!getregion")
+				case "xbupdate!setxamfeaturemask":
+					self.send_single_line("200- OK")
+					print("xbupdate!setxamfeaturemask")
+				case "xbupdate!close":
+					self.send_single_line("200- OK")
+					print("xbupdate!close")
+				case "xbupdate!finish":
+					self.send_single_line("200- OK")
+					print("xbupdate!finish")
+				case "xbupdate!restart":
+					self.send_single_line("200-  ")
+					print("xbupdate!restart")
+				case "recovery":
 					print("Booting recovery...")
 					self.send_single_line("200- OK")
-				elif parsed.name == "dbgname":
+				case "dbgname":
 					print("Sending console name...")
 					self.send_single_line("200- " + cfg["console_name"])
-				elif parsed.name == "consoletype":
+				case "consoletype":
 					print("Sending console type...")
 					self.send_single_line("200- " + cfg["console_type"])
-				elif parsed.name == "consolefeatures":
+				case "consolefeatures":
 					# Basic JRPC2 Support - Byrom
 					if parsed.param_exists("ver") and parsed.param_exists("type"): # is jrpc2 command
 						type_param = parsed.get_param("type").as_int()
@@ -424,23 +588,24 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("200- S_OK")
 						else:  #simple query
 							self.send_single_line("200- " + cfg["console_type"])
-				elif parsed.name == "advmem" and parsed.flag_exists("status"):
-					print("Sending memory properties...")
-					self.send_single_line("200- enabled")
-				elif parsed.name == "altaddr":
+				case "advmem":
+					if parsed.flag_exists("status"):
+						print("Sending memory properties...")
+						self.send_single_line("200- enabled")
+				case "altaddr":
 					print("Sending title IP address...")
 					addr = bytes(map(int, cfg["alternate_address"].split('.'))).hex()
 					self.send_single_line("200- addr=0x" + addr)
-				elif parsed.name == "systime":
+				case "systime":
 					print("Sending system time...")
 					(time_low, time_high) = uint64_to_uint32(system_time(), True)
 					with XBDMCommand() as cmd:
-						cmd.set_response_code(200)
-						cmd.add_param("high", time_high)
-						cmd.add_param("low", time_low)
+						cmd.set_code(200)
+						cmd.set_param("high", time_high)
+						cmd.set_param("low", time_low)
 						cmd_data = cmd.get_output(True)
 					self.transport.write(cmd_data)
-				elif parsed.name == "systeminfo":
+				case "systeminfo":
 					print("Sending system info...")
 					lines = [
 						"HDD=" + "Enabled" if cfg["hdd_enabled"] else "Disabled",
@@ -449,16 +614,17 @@ class XBDMServerProtocol(asyncio.Protocol):
 						f"BaseKrnl={cfg['base_kernel']} Krnl={cfg['kernel']} XDK={cfg['xdk']}"
 					]
 					self.send_multi_line(lines)
-				elif parsed.name == "xbeinfo" and parsed.flag_exists("RUNNING"):
-					print("Sending current title info...")
-					lines = [
-						"timestamp=0x00000000 checksum=0x00000000",
-						f"name=\"{cfg['current_title_path']}\""
-					]
-					self.send_multi_line(lines)
-				elif parsed.name == "screenshot":
+				case "xbeinfo":
+					if parsed.flag_exists("RUNNING"):
+						print("Sending current title info...")
+						lines = [
+							"timestamp=0x00000000 checksum=0x00000000",
+							f"name=\"{cfg['current_title_path']}\""
+						]
+						self.send_multi_line(lines)
+				case "screenshot":
 					print("Sending screenshot...")
-					self.transport.write(b"203- binary response follows\r\n")
+					self.send_single_line("203- binary response follows")
 
 					# output resolution
 					ow = 1280  # 1280
@@ -482,45 +648,46 @@ class XBDMServerProtocol(asyncio.Protocol):
 						data = f.read()
 
 					with XBDMCommand() as cmd:
-						cmd.add_param("pitch", p)
-						cmd.add_param("width", ow)
-						cmd.add_param("height", oh)
-						cmd.add_param("format", D3DFMT_A8R8G8B8)
-						cmd.add_param("offsetx", 0)
-						cmd.add_param("offsety", 0)
-						cmd.add_param("framebuffersize", len(data))  # 0x398000
-						cmd.add_param("sw", sw)
-						cmd.add_param("sh", sh)
-						cmd.add_param("colorspace", 0)
+						cmd.set_param("pitch", p)
+						cmd.set_param("width", ow)
+						cmd.set_param("height", oh)
+						cmd.set_param("format", D3DFMT_A8R8G8B8)
+						cmd.set_param("offsetx", 0)
+						cmd.set_param("offsety", 0)
+						cmd.set_param("framebuffersize", len(data))  # 0x398000
+						cmd.set_param("sw", sw)
+						cmd.set_param("sh", sh)
+						cmd.set_param("colorspace", 0)
 						self.transport.write(cmd.get_output(True, True))
 					self.transport.write(data)
-				elif parsed.name == "drivelist":
+				case "drivelist":
 					print("Sending drive list...")
 					self.send_multi_line([f"drivename=\"{x}\"" for x in list_drives()])
-				elif parsed.name == "isdebugger":
+				case "isdebugger":
 					print("Requesting is debugger...")
 					self.send_single_line("410- name=\"XRPC\" user=" + cfg["username"])
-				elif parsed.name == "break" and parsed.flag_exists("clearall"):
-					print("Removing all breakpoints...")
-					self.send_single_line("200- OK")
-				elif parsed.name == "modules":
+				case "break":
+					if parsed.flag_exists("clearall"):
+						print("Removing all breakpoints...")
+						self.send_single_line("200- OK")
+				case "modules":
 					print("Sending module listing...")
 					lines = []
 					for single in cfg["modules"]:
 						with XBDMCommand() as cmd:
-							cmd.add_param("name", single["name"], True)
-							cmd.add_param("base", single["base"])
-							cmd.add_param("size", single["size"])
-							cmd.add_param("check", 0)
-							cmd.add_param("timestamp", 0)
-							cmd.add_param("pdata", 0)
-							cmd.add_param("psize", 0)
-							cmd.add_param("thread", 0)
-							cmd.add_param("osize", 0)
+							cmd.set_param("name", single["name"], True)
+							cmd.set_param("base", single["base"])
+							cmd.set_param("size", single["size"])
+							cmd.set_param("check", 0)
+							cmd.set_param("timestamp", 0)
+							cmd.set_param("pdata", 0)
+							cmd.set_param("psize", 0)
+							cmd.set_param("thread", 0)
+							cmd.set_param("osize", 0)
 							cmd_data = cmd.get_output(True)
 						lines.append(cmd_data)
 					self.send_multi_line(lines)
-				elif parsed.name == "kdnet":  # kdnet config commands
+				case "kdnet":  # kdnet config commands
 					if parsed.flag_exists("set"):  # set kdnet settings
 						if parsed.param_exists("IP") and parsed.param_exists("Port"):
 							kdnet_addr = parsed.get_param("IP")
@@ -529,7 +696,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("200- kdnet set succeeded.")
 					elif parsed.flag_exists("show"):  # show settings
 						self.send_single_line("200- kdnet settings:\x1E\tEnable=1\x1E\tTarget IP: 192.168.0.43\x1E\tTarget MAC: 00-25-AE-E4-43-87\x1E\tHost IP: 192.168.0.2\x1E\tHost Port: 50001\x1E\tEncrypted: 0\x1E")
-				elif parsed.name == "debugger":
+				case "debugger":
 					if parsed.flag_exists("DISCONNECT"):
 						print("Debugger disconnecting...")
 					elif parsed.flag_exists("CONNECT"):
@@ -537,21 +704,21 @@ class XBDMServerProtocol(asyncio.Protocol):
 						#dbg_port = int(parsed.get_param("PORT"))
 						#dbg_name = parsed.get_param("user")
 					self.send_single_line("200- OK")
-				elif parsed.name == "drivefreespace":
+				case "drivefreespace":
 					if parsed.get_param("NAME"):
 						drive_label = parsed.get_param("NAME")
 						print(f"Requesting free space for drive label {drive_label}...")
 						(low, high) = uint64_to_uint32(cfg["console_hdd_size"], True, True)
 						with XBDMCommand() as cmd:
-							cmd.add_param("freetocallerlo", low)
-							cmd.add_param("freetocallerhi", high)
-							cmd.add_param("totalbyteslo", low)
-							cmd.add_param("totalbyteshi", high)
-							cmd.add_param("totalfreebyteslo", low)
-							cmd.add_param("totalfreebyteshi", high)
+							cmd.set_param("freetocallerlo", low)
+							cmd.set_param("freetocallerhi", high)
+							cmd.set_param("totalbyteslo", low)
+							cmd.set_param("totalbyteshi", high)
+							cmd.set_param("totalfreebyteslo", low)
+							cmd.set_param("totalfreebyteshi", high)
 							cmd_data = cmd.get_output(True)
 						self.send_multi_line([cmd_data])
-				elif parsed.name == "dirlist":
+				case "dirlist":
 					if parsed.param_exists("NAME"):
 						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						if isdir(phys_path):
@@ -566,13 +733,13 @@ class XBDMServerProtocol(asyncio.Protocol):
 								(mtime_low, mtime_high) = uint64_to_uint32(modify_time_to_file_time(single_path), True)
 								(size_low, size_high) = uint64_to_uint32(single_size, True)
 								with XBDMCommand() as cmd:
-									cmd.add_param("name", single, True)
-									cmd.add_param("sizehi", size_high)
-									cmd.add_param("sizelo", size_low)
-									cmd.add_param("createhi", ctime_high)
-									cmd.add_param("createlo", ctime_low)
-									cmd.add_param("changehi", mtime_high)
-									cmd.add_param("changelo", mtime_low)
+									cmd.set_param("name", single, True)
+									cmd.set_param("sizehi", size_high)
+									cmd.set_param("sizelo", size_low)
+									cmd.set_param("createhi", ctime_high)
+									cmd.set_param("createlo", ctime_low)
+									cmd.set_param("changehi", mtime_high)
+									cmd.set_param("changelo", mtime_low)
 									cmd_data = cmd.get_output(True, True)
 								lines.append(cmd_data)
 							self.send_multi_line(lines, False)
@@ -582,9 +749,9 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.end_multi_line()
 						else:
 							self.send_single_line("402- directory not found")
-				elif parsed.name == "setfileattributes":
+				case "setfileattributes":
 					self.send_single_line("200- OK")
-				elif parsed.name == "getfileattributes":
+				case "getfileattributes":
 					if parsed.param_exists("NAME"):
 						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						print(f"Requesting file attributes for \"{phys_path}\"...")
@@ -595,25 +762,25 @@ class XBDMServerProtocol(asyncio.Protocol):
 							(mtime_low, mtime_high) = uint64_to_uint32(modify_time_to_file_time(phys_path), True)
 							(size_low, size_high) = uint64_to_uint32(file_size, True)
 							with XBDMCommand() as cmd:
-								cmd.add_param("sizehi", size_high)
-								cmd.add_param("sizelo", size_low)
-								cmd.add_param("createhi", ctime_high)
-								cmd.add_param("createlo", ctime_low)
-								cmd.add_param("changehi", mtime_high)
-								cmd.add_param("changelo", mtime_low)
+								cmd.set_param("sizehi", size_high)
+								cmd.set_param("sizelo", size_low)
+								cmd.set_param("createhi", ctime_high)
+								cmd.set_param("createlo", ctime_low)
+								cmd.set_param("changehi", mtime_high)
+								cmd.set_param("changelo", mtime_low)
 								cmd_data = cmd.get_output(True)
 							self.send_multi_line([cmd_data])
 						else:
 							print("File doesn't exist...")
 							self.send_single_line("402- file not found")
-				elif parsed.name == "mkdir":
+				case "mkdir":
 					if parsed.param_exists("NAME"):
 						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						if not isfile(phys_path) and not isdir(phys_path):
 							print(f"Created directory \"{phys_path}\"...")
 							makedirs(phys_path, exist_ok=True)
 							self.send_single_line("200- OK")
-				elif parsed.name == "getfile":
+				case "getfile":
 					if parsed.param_exists("NAME"):
 						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						if isfile(phys_path):
@@ -623,7 +790,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.transport.write(b"203- binary response follows\r\n")
 							self.transport.write(pack("<I", len(data)))
 							self.transport.write(data)
-				elif parsed.name == "sendvfile":
+				case "sendvfile":
 					if parsed.param_exists("COUNT"):
 						file_count = parsed.get_param("COUNT").as_int()
 						print(f"Receiving {file_count} file(s)...")
@@ -634,11 +801,16 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.receiving_files = True
 							self.send_single_line("203- binary response follows")
 							self.transport.write((b"\x00" * 4) * self.num_files_total)
-				elif parsed.name == "sendfile":
-					print("Receiving single file...")
-					self.send_single_line("203- binary response follows")
-					self.transport.write((b"\x00" * 4))
-				elif parsed.name == "rename":
+				case "sendfile":
+					file_name = parsed.get_param("NAME").as_str()
+					file_size = parsed.get_param("LENGTH").as_int()
+					print(f"Receiving single file \"{file_name}\" (0x{file_size:X})...")
+					self.send_single_line("204- send binary data")
+					self.file_data_left = file_size
+					self.receiving_file = True
+					self.receiving_type = ReceiveFileType.SENDFILE_SINGLE
+					self.file_path = xbdm_to_device_path(file_name)
+				case "rename":
 					if parsed.param_exists("NAME") and parsed.param_exists("NEWNAME"):
 						old_file_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						new_file_path = xbdm_to_local_path(parsed.get_param("NEWNAME").as_str())
@@ -646,7 +818,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 							print(f"Renaming \"{old_file_path}\" to \"{new_file_path}\"...")
 							rename(old_file_path, new_file_path)
 							self.send_single_line("200- OK")
-				elif parsed.name == "delete":
+				case "delete":
 					if parsed.param_exists("NAME"):
 						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
 						if parsed.flag_exists("DIR"):
@@ -656,14 +828,14 @@ class XBDMServerProtocol(asyncio.Protocol):
 							print(f"Deleting file @ \"{phys_path}\"...")
 							remove(phys_path)
 						self.send_single_line("200- OK")
-				elif parsed.name == "setmem":
+				case "setmem":
 					if parsed.param_exists("addr") and parsed.param_exists("data"):
 						print(parsed.get_param("addr"))
 						setmem_addr = parsed.get_param("addr")
 						setmem_data = parsed.get_param("data").as_bytes()
 						print(f"Attempted to set {len(setmem_data)} byte(s) @ {setmem_addr}...")
 						self.send_single_line(f"200- set {str(len(setmem_data))} bytes")
-				elif parsed.name == "getmem" or parsed.name == "getmemex":
+				case "getmem" | "getmemex":
 					if parsed.param_exists("ADDR") and parsed.param_exists("LENGTH"):
 						addr = parsed.get_param("ADDR").as_int()
 						length = parsed.get_param("LENGTH").as_int()
@@ -674,7 +846,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 						self.transport.write(pack("<H", 1024) + (b"suckcock" * 128))
 						self.transport.write(pack("<H", 1024) + (b"suckcock" * 128))
 						self.transport.write(pack("<H", 1024) + (b"suckcock" * 128))
-				elif parsed.name == "setsystime":
+				case "setsystime":
 					if parsed.param_exists("clocklo") and parsed.param_exists("clockhi") and parsed.param_exists("tz"):
 						sys_time_low = parsed.get_param("clocklo").as_int()
 						sys_time_high = parsed.get_param("clockhi").as_int()
@@ -682,14 +854,15 @@ class XBDMServerProtocol(asyncio.Protocol):
 						sys_time = uint32_to_uint64(sys_time_low, sys_time_high)
 						print(f"Setting system time to {sys_time}...")
 						self.send_single_line("200- OK")
-				elif parsed.name == "notify" and parsed.param_exists("reconnectport") and parsed.flag_exists("reverse"):
-					reconnect_port = int(parsed.get_param("reconnectport"))
-					print(f"Requesting reconnect on TCP port {reconnect_port}...")
-					self.send_single_line("205- now a notification channel")
-				elif parsed.name == "notifyat":
+				case "notify":
+					if parsed.param_exists("reconnectport") and parsed.flag_exists("reverse"):
+						reconnect_port = int(parsed.get_param("reconnectport"))
+						print(f"Requesting reconnect on TCP port {reconnect_port}...")
+						self.send_single_line("205- now a notification channel")
+				case "notifyat":
 					if parsed.flag_exists("drop"):
 						self.send_single_line("200- OK")
-				elif parsed.name == "lockmode":
+				case "lockmode":
 					if parsed.param_exists("BOXID"):
 						box_id = parsed.get_param("BOXID")
 						print(f"Attempted to lock system with box ID {box_id}...")
@@ -697,17 +870,18 @@ class XBDMServerProtocol(asyncio.Protocol):
 					elif parsed.flag_exists("unlock"):
 						print("Attempted to unlock system...")
 						self.send_single_line("200- OK")
-				elif parsed.name == "user" and parsed.param_exists("name"):
-					priv_user = parsed.get_param("NAME")
-					print(f"Attempted to add user {priv_user} to locked system with the privilege string \"{' '.join(parsed.flags)}\"...")
-					self.send_single_line("200- OK")
-				elif parsed.name == "userlist":
+				case "user":
+					if parsed.param_exists("name"):
+						priv_user = parsed.get_param("NAME")
+						print(f"Attempted to add user {priv_user} to locked system with the privilege string \"{' '.join(parsed.flags)}\"...")
+						self.send_single_line("200- OK")
+				case "userlist":
 					self.send_multi_line([
 						"name=\"John\" read write control config manage"
 					])
-				elif parsed.name == "keyxchg":
+				case "keyxchg":
 					self.send_single_line("200- OK")
-				elif parsed.name == "magicboot":
+				case "magicboot":
 					if parsed.param_exists("title") and parsed.param_exists("directory"):
 						magicboot_exe = parsed.get_param("title")
 						magicboot_dir = parsed.get_param("directory")
@@ -716,66 +890,87 @@ class XBDMServerProtocol(asyncio.Protocol):
 					else:
 						print("Reboot attempted!")
 						self.send_single_line("200- OK")
-				elif parsed.name == "getuserpriv":
+				case "getuserpriv":
 					print("Sending user privilege")
 					self.send_single_line("402- file not found")
-				elif parsed.name == "bye":
+				case "bye":
 					# print("Closing the socket...")
 					self.send_single_line("200- bye")
 					self.transport.close()
-				else:
+				case _:
 					if parsed.name is not None:
 						print(f"UNHANDLED COMMAND \"{parsed.name}\"")
-			elif raw_command == bytes.fromhex("020405B40103030801010402"):
-				print("Sending unknown?")
-				self.transport.write(raw_command)
-			elif self.receiving_files:
-				if self.num_files_left > 0 and self.file_handle is None and self.file_data_left == 0:
-					# print("Size:", len(raw_command))
-					# print(raw_command.hex())
-					#receive file header
-					with BytesIO(raw_command) as bio:
-						(header_size,) = unpack(">I", bio.read(4))
-						# print("Header Size:", header_size)
-						header = bio.read(header_size - 4)  # exclude header size
-						(create_hi, create_lo, modify_hi, modify_lo, file_size_hi, file_size_lo, file_attrbs) = unpack(">6IL", header[:28])
+		elif raw_command == bytes.fromhex("020405B40103030801010402"):
+			print("Sending unknown?")
+			self.transport.write(raw_command)
+		elif self.receiving_file:
+			if self.file_handle is None:
+				self.file_handle = open(self.file_path, "wb")
+				self.file_data_left -= self.file_handle.write(raw_command)
+			else:
+				self.file_data_left -= self.file_handle.write(raw_command)
 
-						file_size = uint32_to_uint64(file_size_lo, file_size_hi)
-						self.file_path = xbdm_to_local_path(header[28:-1].decode("UTF8"))
+			if self.file_data_left == 0:
+				self.file_handle.close()
+				self.file_handle = None
+				self.file_path = ""
+				self.receiving_file = False
 
-						self.file_handle = open(self.file_path, "wb")
-						self.file_handle.write(bio.read())
+				if self.receiving_type == ReceiveFileType.SENDFILE_SINGLE:
+					self.send_single_line("203- binary response follows")
+					self.transport.write((b"\x00" * 4))
+				elif self.receiving_type == ReceiveFileType.XBUPDATE_SINGLE:
+					self.send_single_line("200- OK")
+				self.receiving_type = ReceiveFileType.NONE
+		elif self.receiving_files:
+			if self.num_files_left > 0 and self.file_handle is None and self.file_data_left == 0:  # process header and first file bit
+				# print("Size:", len(raw_command))
+				# print(raw_command.hex())
+				# receive file header
+				with BytesIO(raw_command) as bio:
+					(header_size,) = unpack(">I", bio.read(4))
+					# print("Header Size:", header_size)
+					header = bio.read(header_size - 4)  # exclude header size
+					(create_hi, create_lo, modify_hi, modify_lo, file_size_hi, file_size_lo, file_attrbs) = unpack(">6IL", header[:28])
 
-						self.file_data_left = file_size - self.file_handle.tell()
-				elif self.num_files_left > 0 and self.file_handle is not None and self.file_data_left > 0:
-					if self.file_data_left < len(raw_command):  # fragmented packet
-						self.file_handle.write(raw_command[:self.file_data_left])
+					file_size = uint32_to_uint64(file_size_lo, file_size_hi)
+					self.file_path = xbdm_to_local_path(header[28:-1].decode("UTF8"))
 
-						self.file_handle.close()
-						self.file_handle = None
-						self.num_files_left -= 1
-						self.file_path = ""
-						raw_command = raw_command[self.file_data_left:]
-						self.file_data_left = 0
-						# send to data_received to process the packet
-						self.data_received(raw_command)
-						return
-					else:  # unfragmented packet
-						self.file_handle.write(raw_command)
-						self.file_data_left -= len(raw_command)
+					self.file_handle = open(self.file_path, "wb")
+					self.file_handle.write(bio.read())
 
-				if self.file_data_left == 0:
+					self.file_data_left = file_size - self.file_handle.tell()
+			elif self.num_files_left > 0 and self.file_handle is not None and self.file_data_left > 0:
+				if self.file_data_left < len(raw_command):  # fragmented packet
+					self.file_handle.write(raw_command[:self.file_data_left])
+
 					self.file_handle.close()
 					self.file_handle = None
 					self.num_files_left -= 1
-					self.file_data_left = 0
 					self.file_path = ""
+					raw_command = raw_command[self.file_data_left:]
+					self.file_data_left = 0
+					# send to data_received to process the packet
+					self.data_received(raw_command)
+					# return so it doesn't fall through
+					return
+				else:  # >= len(raw_command)unfragmented packet
+					self.file_handle.write(raw_command)
+					self.file_data_left -= len(raw_command)
 
-				if self.num_files_left == 0:
-					self.send_single_line("203- binary response follows")
-					self.transport.write((b"\x00" * 4) * self.num_files_total)
-					self.num_files_total = 0
-					self.receiving_files = False
+			# close the handle and reset the download file's variables
+			if self.file_data_left == 0:
+				self.file_handle.close()
+				self.file_handle = None
+				self.num_files_left -= 1
+				self.file_data_left = 0
+				self.file_path = ""
+
+			if self.num_files_left == 0:
+				self.send_single_line("203- binary response follows")
+				self.transport.write((b"\x00" * 4) * self.num_files_total)
+				self.num_files_total = 0
+				self.receiving_files = False
 
 async def run_server():
 	loop = asyncio.get_running_loop()
