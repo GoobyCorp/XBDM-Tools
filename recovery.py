@@ -2,6 +2,7 @@
 
 import re
 import asyncio
+from json import loads
 from typing import Any
 from shlex import shlex
 from pathlib import Path
@@ -15,12 +16,19 @@ from datetime import datetime, timedelta, tzinfo
 XBDM_PORT = 730
 XBDM_BUFF_SIZE = 1460
 XBDM_DIR = "DEVICES"
+XBDM_NEWLINE = b"\r\n"
+
+# constants
+MANIFEST_FILE = "recovery_manifest_21256_18.json"
 
 # time variables
 EPOCH_AS_FILETIME = 116444736000000000
 HUNDREDS_OF_NANOSECONDS = 10000000
 ZERO = timedelta(0)
 HOUR = timedelta(hours=1)
+
+# variables
+MANIFEST: None | dict = None
 
 # arguments
 XBDM_HOST: str = ""
@@ -29,586 +37,14 @@ SHADOWBOOT_PATH: str = ""
 # regex
 CODE_EXP = re.compile(r"^(\d+)-")
 
-UPD_FILES_TO_DELETE = [
-	"\\Device\\Harddisk0\\Partition1\\$systemupdate\\su20076000_00000000",
-	"\\Device\\Harddisk0\\Partition1\\recint.ini",
-	"\\Device\\Harddisk0\\Partition1\\netsim.ini",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\xonline.ini",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\zune.ini",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\messenger.xml",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\mediasite.xzp",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\livepack.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\CodeCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\AudioCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\GraphicsCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\CodecsCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NomniCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\xamdCoverageData.cov",
-	"\\Device\\Harddisk0\\Partition1\\xbdm.ini",
-	"\\Device\\Harddisk0\\Partition1\\xbdm.dll",
-	"\\Device\\Harddisk0\\Partition1\\default.exe",
-	"\\Device\\Harddisk0\\Partition1\\default.xex",
-	"\\Device\\FlashFs\\friends.xex",
-	"\\Device\\FlashFs\\feedback.xex",
-	"\\Device\\FlashFs\\voicemail.xex",
-	"\\Device\\FlashFs\\marketplace.xex",
-	"\\Device\\FlashFs\\quickchat.xex",
-	"\\Device\\FlashFs\\xmsgr.xex",
-	"\\saferec.bmp",
-	"\\Device\\Harddisk0\\Partition1\\xboxromw2d.bin",
-	"\\Device\\Harddisk0\\Partition1\\xboxromw2td.bin",
-	"\\Device\\Harddisk0\\Partition1\\xboxromtw2d.bin",
-	"\\Device\\FlashFs\\xenonsclatin.xtt",
-	"\\Device\\FlashFs\\ximedic_chs.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\epg.ini",
-	"\\xapi.xex",
-	"\\xapid.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\spsapi.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\spsreng.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\spsrx.xex"
-]
-
-UPD_DIRS_TO_DELETE = [
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\LiveEnvironments\\TestNet",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\LiveEnvironments\\TestNetMain",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\LiveEnvironments\\TestNet(NULL_AES)",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\override",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\jp-jp",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\de-de",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\en-au",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\en-gb",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\en-us",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\es-es",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\es-mx",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\fr-ca",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\fr-fr",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\it-it",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech\\ja-jp",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\xspeech",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\Database",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\calibrate",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\fwupdate",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\natal",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\KinectAdventuresDownloader",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\simpleskeletontracking",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\simplespeechrecognition",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\menuusinghandles",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\avatarretargeting",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\depthmapparticlestream",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\filtering",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\samples\\PlayspaceFeedback",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speech",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechlab",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuivoicecollection",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity"
-]
-
-UPD_FILES_TO_UPLOAD = [
-	"\\connectx.xex",
-	"\\xbdm.xex",
-	"\\xstudio.xex",
-	"\\xam.xex",
-	"\\bootanim.xex",
-	"\\hud.xex",
-	"\\signin.xex",
-	"\\vk.xex",
-	"\\updater.xex",
-	"\\deviceselector.xex",
-	"\\minimediaplayer.xex",
-	"\\gamerprofile.xex",
-	"\\createprofile.xex",
-	"\\mfgbootlauncher.xex",
-	"\\huduiskin.xex",
-	"\\dash.xex",
-	"\\nomni.xex",
-	"\\nomnifwm.xex",
-	"\\nomnifwk.xex",
-	"\\ximecore.xex",
-	"\\processdump.xex",
-	"\\ximedic.xex",
-	"\\xenonjklatin.xtt",
-	"\\xenonclatin.xtt",
-	"\\xenonsclatin.xtt",
-	"\\SegoeXbox-Light.xtt",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\dmext\\xsim.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\music1.wma",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\music2.wma",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\music3.wma",
-	"\\Device\\Harddisk0\\Partition1\\media\\PixPreviewInvalidMode.raw",
-	"\\xbupdate.xex",
-	"\\rrbkgnd.bmp",
-	"\\recovery.ttf",
-	"\\dashboard.xbx",
-	"\\xlaunch.fdf",
-	"\\xshell.xex",
-	"\\xlaunch.strings"
-]
-
-UPD_FILES_TO_UPLOAD_SAMPLES = [
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\Avatar\\AvatarEditor.xex",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\AudioConsole3.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Fonts\\Arial_16.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Fonts\\Impact_24.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Help\\Help.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Shaders\\ConsoleMinificationPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Shaders\\ConsolePS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Shaders\\ConsoleVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Shaders\\SpriteVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Dolphin.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Meshes\\Dolphin1.xbg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Meshes\\Dolphin2.xbg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Meshes\\Dolphin3.xbg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Meshes\\SeaFloor.xbg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Shaders\\DolphinTween.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Shaders\\SeaFloor.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Shaders\\ShadeCausticsPixel.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\LightShafts.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Meshes\\hebe.xbg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropAmbientOnlyPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropAmbientOnlyVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropDepthVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropMainVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropNoiseShadowPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\CompositeFilteredFogPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\ObjectMainVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\ObjectNoiseShadowPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\OverlayMainVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\ShadowBlurPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\SpotlightFrustumFrontPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\SpotlightFrustumFrontVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\SpotlightFrustumPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\SpotlightFrustumVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\SpotlightWireFrustumVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\VolVizShellsMainVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\VolVizShellsNoiseShadowPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Textures\\LightShafts_NoiseVolume.dds",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\UIAuditioning\\UIAuditioning.xex",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\UIAuditioning\\media\\UIAuditioning.xzp",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\UIAuditioning\\media\\xarialuni.ttf",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\SceneViewer2.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\Deferred.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\PassPerLight.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\PostEffects.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\SimpleShaders.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\Ubershader_Final.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Effects\\Ubershader_Library.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Fonts\\SegoeUI_16_Outline.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Fonts\\SegoeUI_24.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Scenes\\city-final.pmem",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Scenes\\city-final.xatg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\SceneViewerXui.xzp",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\SettingsUI.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Textures\\city-final.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\commandline.txt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\SimpleSkeletonTracking.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Effects\\SimpleShaders.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\SimpleSpeechRecognition.xex",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Fonts\\Arial_16_Speech.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_at.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_at.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_ch.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_ch.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_de.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_de_de.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_au.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_au.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_gb.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_gb.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_en_us.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_es_es.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_es_es.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_es_mx.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_es_mx.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_ca.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_ca.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_ch.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_ch.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_fr.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_fr_fr.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_it_it.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_it_it.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_ja_jp.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_ja_jp.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_pt_br.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\medieval_pt_br.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\phonetic_alphabet_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\phonetic_alphabet_en_us.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_en_gb.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_en_gb.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_en_us.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_es_mx.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_es_mx.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_fr_ca.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_fr_ca.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_ja_jp.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_ja_jp.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_pt_br.cfg",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Grammars\\yes_no_pt_br.grtxt",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp3079",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp2055",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1031",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp3081",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp2057",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1033",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp3082",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp2058",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp3084",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp4108",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1036",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1040",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1041",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\nuisp1046",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\MenuUsingHandles.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Shaders\\DepthPreviewPS.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Shaders\\DepthPreviewSmoothingVS.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\04_Cursor_Prox_Closer_longer_loop.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\07_Cursor_Hotspot_Enter.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\09_Cursor_Inside_short_loop.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\10_Cursor_Hotspot_Exit.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\11_Btn_Interactive_Select.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\11_Cursor_Direction_Select.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\12_Btn_Select.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\19_Btn_Interactive_Focus.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Sounds\\ProximityBlip2.wav",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\PlayspaceFeedback.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\background_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\background_vs.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_opaque_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_opaque_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_transparent_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_vs.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_transparent_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_vs.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\head_opaque_ps.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\head_opaque_vs.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\AvatarRetargeting.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\HeadPosition.xmplr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\NuiHeadOrientation.bin.be",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Filtering.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\DepthMapParticleStream.exe",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Resource.xpr",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\EdgeDetect.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\GaussBlur5x5.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\GetSegmentationFromDepthTexture.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\PointSprite.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\PointSprite.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\PositionDiffuseTexcoord.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\RenderTrail.xpu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\ScreenSpaceShader.xvu",
-	"\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Shaders\\TextureModDiffuse.xpu",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\nuiview.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\nuiview.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\nuiview.xzp",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\pointsprite.png",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\Database.xmplr",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\NuiIdentity.bin.be",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\BiometricSigninSetup.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\Media\\Effects\\SimpleShaders.fxobj",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\Media\\Fonts\\Arial_16.xpr",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\Media\\Help\\Help.xpr",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\speechLab.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp3079",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp2055",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1031",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp3081",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp2057",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1033",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp3082",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp2058",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp3084",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp4108",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1036",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1040",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1041",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\nuisp1046",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\phonetic_alphabet_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_de_at.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_de_ch.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_de_de.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_en_au.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_en_gb.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_es_mx.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_es_es.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_fr_ca.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_fr_ch.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_fr_fr.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_it_it.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_ja_jp.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\medieval_pt_br.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_en_gb.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_en_us.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_es_mx.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_fr_ca.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_ja_jp.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\cfg\\yes_no_pt_br.cfg",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\nuivoicecollection.xex",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\appconfig.xml",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\languages.xml",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\setup.xml",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\setup_lang.xml",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\example-script.txt",
-	"\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\media\\silence.wav",
-]
-
-UPD_FILES_TO_UPLOAD_AUX_EXT = [
-	"\\Device\\SystemExtLink\\system.manifest",
-	"\\Device\\SystemAuxLink\\online\\system.online.manifest.4451",
-	"\\Device\\SystemExtLink\\Content\\0000000000000000\\FFFE07DF\\00008000\\FFFE07DF00000002",
-	"\\Device\\SystemExtLink\\Content\\0000000000000000\\FFFE07DF\\00008000\\FFFE07DF00000006",
-	"\\Device\\SystemExtLink\\Content\\0000000000000000\\FFFE07DF\\00008000\\FFFE07DF00000008",
-	"\\Device\\SystemExtLink\\Content\\0000000000000000\\FFFE07DF\\00008000\\FFFE07DF00000001",
-	"\\Device\\SystemExtLink\\20445100\\AvatarEditor.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\luaext.xex",
-	"\\Device\\SystemExtLink\\20445100\\nuihud.xex",
-	"\\Device\\SystemExtLink\\20445100\\dash.xex",
-	"\\Device\\SystemExtLink\\20445100\\dash.ExtraAVCodecs.xex",
-	"\\Device\\SystemExtLink\\20445100\\dash.ExtraAVCodecs2.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.OnlineCommon.lex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.Search.lex",
-	"\\Device\\SystemExtLink\\20445100\\Dash.Search.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.Core.xex",
-	"\\Device\\SystemExtLink\\20417F00\\Title.Zune.xex",
-	"\\Device\\SystemExtLink\\2506FD00\\PlayReady.xex",
-	"\\Device\\SystemExtLink\\20445100\\Xam.Community.xex",
-	"\\Device\\SystemExtLink\\20445100\\Xam.WordRegister.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.AccountMgmt.lex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.ContentExplorer.lex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.MicrosoftStore.lex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.Purchase.lex",
-	"\\Device\\SystemExtLink\\20445100\\dash.natalpregame.xex",
-	"\\Device\\SystemExtLink\\20445100\\Dash.NetworkStorage.lex",
-	"\\Device\\SystemExtLink\\20445100\\dash.ClosedCaptionDll.xex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.TFA.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.Social.lex",
-	"\\Device\\SystemExtLink\\20445100\\dashnui.xex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.Fitness.xex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.CSVTrans.xex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.AccountRecovery.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.ChatAndMessenger.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.Friends.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.Download.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.NuiPurchase.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.Payment.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.PaymentInst.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.Purchase.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.Subscriptions.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.NetworkStorage.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.NuiCommunity.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.SocialPost.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.PlayerFeedback.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.Beacons.xex",
-	"\\Device\\SystemExtLink\\20445100\\XimeDic.xex",
-	"\\Device\\SystemExtLink\\20445100\\XimeDic_CHS.xex",
-	"\\Device\\SystemExtLink\\20445100\\XimeDicCh.xex",
-	"\\Device\\SystemExtLink\\20445100\\ximedicex.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.Voicemail.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.FamilyCenter.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.FamilyWizard.lex",
-	"\\Device\\SystemExtLink\\32000100\\Xna_TitleLauncher.xex",
-	"\\Device\\SystemExtLink\\20445100\\BiometricSetup.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\LiveSignup.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.MP.LiveSignup.lex",
-	"\\Device\\SystemExtLink\\20445100\\natalsu.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.PrivacyUI.xex",
-	"\\Device\\SystemExtLink\\20445100\\Dash.FieldCalibration.lex",
-	"\\Device\\SystemExtLink\\20445100\\Dash.NuiTroubleshooter.lex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.NuiTroubleshooter.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Title.NewLiveSignup.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.MP.LiveAccount.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Dash.LF.GamerTagChange.lex",
-	"\\Device\\SystemExtLink\\20445100\\Dash.Kiosk.lex",
-	"\\Device\\SystemExtLink\\20445100\\Guide.AvatarMiniCreator.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\Guide.Survey.xex",
-	"\\Device\\SystemAuxLink\\online\\20445100\\TakehomeRecorder.lex",
-	"\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.common.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.controlp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.MEDIA.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.BiometricSetup.xex.biometri.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.CreateProfile.xex.cp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyCenter.xex.familyce.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyCenter.xex.familyco.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyWizard.lex.xzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.FieldCalibration.lex.fieldxzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.LF.GamerTagChange.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.AccountMgmt.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.ContentExplorer.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.Core.xex.SharedUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.LiveSignup.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.LiveSignup.lex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.MicrosoftStore.lex.CntryUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.MicrosoftStore.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.MP.Purchase.lex.DashUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.natalpregame.xex.natalpre.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.NetworkStorage.lex.xzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.NuiTroubleshooter.lex.nuitsxzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.ekmedia.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.vkmedia.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.PrivacyUI.xex.privacyu.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.Search.lex.dashsear.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.Search.xex.dashsear.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Dash.Social.lex.xzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.arcade.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.consoles.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.contui.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.dashmain.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.download.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.dvd.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.epix.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.gamer.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.gamercar.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.hubui.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.iptv.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.memory.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.music.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.network.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.oobe.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.parental.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.pictures.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.signinpr.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.signupbo.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.slots.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.socxzp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.thermal.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dash.xex.videos.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.dashnui.xex.speechpa.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.Fitness.xex.fitness.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.CSVTrans.xex.CSVTrans.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.deviceselector.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.GamerProfile.xex.gp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.AccountRecovery.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.AccountRecovery.xex.shdmedia.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.AvatarMiniCreator.xex.avatarmc.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.Beacons.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.ChatAndMessenger.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.Friends.xex.friends.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.HudDLUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.LiveAccount.xex.HudLAUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.NuiPurchase.xex.HudPurUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Payment.xex.HudPayUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.PaymentInst.xex.HudPiUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.PaymentInst.xex.SharedUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Purchase.xex.HudPurUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Subscriptions.xex.HudSubUI.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.NetworkStorage.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.NuiCommunity.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.NuiTroubleshooter.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.PlayerFeedback.xex.Feedback.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.SocialPost.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.TFA.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Guide.Voicemail.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.hud.xex.hud.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.huduiskin.xex.xam.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.LiveSignup.xex.media1.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.MiniMediaPlayer.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.nuihud.xex.media.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.signin.xex.signin.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.app.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.updater.xex.updater.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.xam.xex.controlp.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.xam.xex.gamercrd.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.xam.xex.mplayer.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.xam.xex.shrdres.xzp",
-	"\\Device\\SystemExtLink\\20445100\\L.xam.xex.xam.xzp",
-	"\\Device\\SystemExtLink\\20445100\\XenonSCLatin.xtt"
-]
-
-UPD_FILES_TO_RENAME = [
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Dolphin\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\BackdropDepthVS.xvu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\LightShafts\\Media\\Shaders\\ObjectDepthVS.xvu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AudioConsole3\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SceneViewer2\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSpeechRecognition\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Effects\\SimpleShaders.fxobj", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Effects\\SimpleShaders.fxobj"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\MenuUsingHandles\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Effects\\SimpleShaders.fxobj", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Effects\\SimpleShaders.fxobj"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Effects\\SimpleShaders.fxobj", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Effects\\SimpleShaders.fxobj"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\background_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\background_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\background_vs.xvu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\background_vs.xvu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_opaque_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_opaque_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_opaque_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_shiny_opaque_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_transparent_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_shiny_transparent_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_shiny_vs.xvu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_shiny_vs.xvu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_transparent_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_transparent_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\body_vs.xvu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\body_vs.xvu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\head_opaque_ps.xpu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\head_opaque_ps.xpu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\PlayspaceFeedback\\Media\\Shaders\\head_opaque_vs.xvu", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Media\\Shaders\\head_opaque_vs.xvu"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\AvatarRetargeting\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Effects\\SimpleShaders.fxobj", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Media\\Effects\\SimpleShaders.fxobj"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\Filtering\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Fonts\\Arial_16.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Fonts\\Arial_16.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Media\\Help\\Help.xpr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Media\\Help\\Help.xpr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\SimpleSkeletonTracking\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\Devkit\\Samples\\DepthMapParticleStream\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\identity\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\speechLab\\NuiIdentity.bin.be"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\Database.xmplr", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\Database.xmplr"),
-	("\\Device\\Harddisk0\\Partition1\\DEVKIT\\nuiview\\NuiIdentity.bin.be", "\\Device\\Harddisk0\\Partition1\\DEVKIT\\NuiVoiceCollection\\NuiIdentity.bin.be"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.controlp.xzp", "\\Device\\SystemExtLink\\20445100\\L.BiometricSetup.xex.controlp.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyCenter.xex.familyco.xzp", "\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyWizard.lex.familyco.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.MP.LiveSignup.lex.media.xzp", "\\Device\\SystemExtLink\\20445100\\L.Dash.MP.MicrosoftStore.lex.media.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.FamilyCenter.xex.familyco.xzp", "\\Device\\SystemExtLink\\20445100\\L.Dash.PrivacyUI.xex.familyco.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.vkmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.Dash.Search.lex.vkmedia.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.vkmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.Dash.Search.xex.vkmedia.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.controlp.xzp", "\\Device\\SystemExtLink\\20445100\\L.dash.xex.controlp.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.common.xzp", "\\Device\\SystemExtLink\\20445100\\L.dash.xex.dashcomm.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.MP.Core.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.dash.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.common.xzp", "\\Device\\SystemExtLink\\20445100\\L.DvdXPlayer.xex.dashcomm.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.dash.xex.dvd.xzp", "\\Device\\SystemExtLink\\20445100\\L.DvdXPlayer.xex.dvd.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Guide.MP.LiveAccount.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Guide.MP.NuiPurchase.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Payment.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Purchase.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Download.xex.SharedUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Guide.MP.Subscriptions.xex.SharedUI.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.controlp.xzp", "\\Device\\SystemExtLink\\20445100\\L.LiveSignup.xex.controlp.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.MP.MicrosoftStore.lex.CntryUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.LiveSignup.xex.media2.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.MP.LiveSignup.lex.media.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.ccapp.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.AvatarEditor.xex.controlp.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.controlp.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.ekmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.embedded.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Guide.AccountRecovery.xex.shdmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.media.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.MP.MicrosoftStore.lex.CntryUI.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.media2.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.vkmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.Title.NewLiveSignup.xex.vkmedia.xzp"),
-	("\\Device\\SystemExtLink\\20445100\\L.Dash.OnlineCommon.lex.vkmedia.xzp", "\\Device\\SystemExtLink\\20445100\\L.vk.xex.vk.xzp")
-]
-
 def format_response(command: bytes | bytearray, lowercase: bool = False):
 	command =  command.decode("UTF8").rstrip()
 	if lowercase:
 		command = command.lower()
 	return command
+
+def read_manifest() -> dict:
+	return loads(Path(MANIFEST_FILE).read_text())
 
 def xbdm_to_device_path(path: str) -> str:
 	if path.startswith("\\Device\\"):
@@ -771,7 +207,10 @@ class XBDMCommand:
 		elif isinstance(value, str):
 			value = value
 		elif isinstance(value, int):
-			value = "0x" + value.to_bytes(4, "big").hex()
+			if 0 <= value <= 0xFFFFFFFF:
+				value = "0x" + value.to_bytes(4, "big").hex()
+			elif 0 <= value <= 0xFFFFFFFFFFFFFFFF:
+				value = "0x" + value.to_bytes(8, "big").hex()
 		elif isinstance(value, bool):
 			value = "1" if value else "0"
 		self.args[key] = value
@@ -853,7 +292,7 @@ async def open_xbdm_connection() -> tuple[asyncio.StreamReader, asyncio.StreamWr
 	(reader, writer) = await asyncio.open_connection(XBDM_HOST, XBDM_PORT)
 
 	# receive 201- connected
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt0 = XBDMCommand.parse(format_response(data))
 
 	assert pkt0.code == 201
@@ -862,11 +301,11 @@ async def open_xbdm_connection() -> tuple[asyncio.StreamReader, asyncio.StreamWr
 
 async def close_xbdm_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
 	# send bye
-	writer.write(b"BYE\r\n")
+	writer.write(b"BYE" + XBDM_NEWLINE)
 	await writer.drain()
 
 	# receive 200- bye
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt2 = XBDMCommand.parse(format_response(data))
 
 	assert pkt2.code == 200
@@ -881,7 +320,7 @@ async def send_xbdm_command(cmd: XBDMCommand) -> XBDMCommand:
 	await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt1 = XBDMCommand.parse(format_response(data))
 
 	if cmd.name in ["recovery", "magicboot"]:
@@ -913,7 +352,7 @@ async def send_xbdm_upload_file(local_path: str, remote_path: str) -> None:
 		await writer.drain()
 
 		# receive response
-		data = await reader.read(XBDM_BUFF_SIZE)
+		data = await reader.readuntil(XBDM_NEWLINE)
 		pkt1 = XBDMCommand.parse(format_response(data))
 
 		assert pkt1.code == 204
@@ -927,7 +366,7 @@ async def send_xbdm_upload_file(local_path: str, remote_path: str) -> None:
 			await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt2 = XBDMCommand.parse(format_response(data))
 
 	assert pkt2.code == 200
@@ -972,7 +411,7 @@ async def send_xbupd_upload_file(local_path: str, remote_path: str) -> None:
 		await writer.drain()
 
 		# receive response
-		data = await reader.read(XBDM_BUFF_SIZE)
+		data = await reader.readuntil(XBDM_NEWLINE)
 		pkt1 = XBDMCommand.parse(format_response(data))
 
 		assert pkt1.code == 204
@@ -986,7 +425,7 @@ async def send_xbupd_upload_file(local_path: str, remote_path: str) -> None:
 			await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt2 = XBDMCommand.parse(format_response(data))
 
 	assert pkt2.code == 200
@@ -1007,7 +446,7 @@ async def send_xbupd_delete_file(remote_path: str) -> XBDMCommand:
 	await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt1 = XBDMCommand.parse(format_response(data))
 
 	assert pkt1.code == 200
@@ -1031,7 +470,7 @@ async def send_xbupd_delete_dir(remote_path: str) -> XBDMCommand:
 	await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt1 = XBDMCommand.parse(format_response(data))
 
 	assert pkt1.code == 200
@@ -1055,7 +494,7 @@ async def send_xbupd_rename_file(remote_path_old: str, remote_path_new: str) -> 
 	await writer.drain()
 
 	# receive response
-	data = await reader.read(XBDM_BUFF_SIZE)
+	data = await reader.readuntil(XBDM_NEWLINE)
 	pkt1 = XBDMCommand.parse(format_response(data))
 
 	assert pkt1.code == 200
@@ -1161,24 +600,24 @@ async def xbdm_recovery_client():
 	await send_xbdm_command(cmd)
 
 	# delete files
-	for remote_path in UPD_FILES_TO_DELETE:
+	for remote_path in MANIFEST["upd_files_to_delete"]:
 		await send_xbupd_delete_file(remote_path)
 
 	# delete directories
-	for remote_path in UPD_DIRS_TO_DELETE:
+	for remote_path in MANIFEST["upd_dirs_to_delete"]:
 		await send_xbupd_delete_dir(remote_path)
 
 	# upload files
 	# shadowboot
 	await  send_xbupd_upload_file(SHADOWBOOT_PATH, "\\Device\\Harddisk0\\Partition1\\xboxrom_update.bin")
 	# system files
-	for remote_path in UPD_FILES_TO_UPLOAD:
+	for remote_path in MANIFEST["upd_files_to_upload_default"]:
 		await send_xbupd_upload_file(xbdm_to_device_path(remote_path), remote_path)
 	# aux and ext
-	#for remote_path in UPD_FILES_TO_UPLOAD_AUX_EXT:
+	#for remote_path in MANIFEST["upd_files_to_upload_samples"]:
 	#	await send_xbupd_upload_file(xbdm_to_device_path(remote_path), remote_path)
 	# samples
-	#for remote_path in UPD_FILES_TO_UPLOAD_SAMPLES:
+	#for remote_path in MANIFEST["upd_files_to_upload_aux_ext"]:
 	#	await send_xbupd_upload_file(xbdm_to_device_path(remote_path), remote_path)
 
 	# rename files
@@ -1236,7 +675,7 @@ async def xbdm_recovery_client():
 	await send_xbdm_command(cmd)
 
 def main() -> int:
-	global XBDM_HOST, SHADOWBOOT_PATH
+	global XBDM_HOST, SHADOWBOOT_PATH, MANIFEST
 
 	parser = ArgumentParser(description="A script to recover Xbox 360 devkits")
 	parser.add_argument("host", type=str, help="The devkit IP address")
@@ -1247,6 +686,8 @@ def main() -> int:
 	SHADOWBOOT_PATH = args.image
 
 	assert Path(SHADOWBOOT_PATH).is_file(), "Shadowboot image doesn't exist!"
+
+	MANIFEST = read_manifest()
 
 	asyncio.run(xbdm_recovery_client())
 

@@ -249,6 +249,9 @@ class XBDMCommand:
 	def __exit__(self, exc_type, exc_val, exc_tb):
 		pass
 
+	def __bytes__(self) -> bytes:
+		return self.get_output(True)
+
 	def reset(self) -> None:
 		self.name = None
 		self.code = 0
@@ -307,7 +310,10 @@ class XBDMCommand:
 		elif isinstance(value, str):
 			value = value
 		elif isinstance(value, int):
-			value = "0x" + value.to_bytes(4, "big").hex()
+			if 0 <= value <= 0xFFFFFFFF:
+				value = "0x" + value.to_bytes(4, "big").hex()
+			elif 0 <= value <= 0xFFFFFFFFFFFFFFFF:
+				value = "0x" + value.to_bytes(8, "big").hex()
 		elif isinstance(value, bool):
 			value = "1" if value else "0"
 		self.args[key] = value
