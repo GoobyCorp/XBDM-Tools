@@ -1,20 +1,20 @@
 #!/usr/bin/python3
 
-import re
 import asyncio
 from io import BytesIO
-from shlex import shlex
 from enum import IntEnum
 from pathlib import Path
 from shutil import rmtree
 from json import load, dump
 from calendar import timegm
+from typing import BinaryIO
 from struct import unpack, pack
-from typing import Any, BinaryIO
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
 from datetime import datetime, timedelta, tzinfo
 from ctypes import Structure, Union, c_ulong, c_uint32, c_int32, c_uint64, c_int64
+
+from xbdm_common import *
 
 # constants
 D3DFMT_A8R8G8B8 = 0x18280186
@@ -42,9 +42,6 @@ HOUR = timedelta(hours=1)
 # config
 cfg: list | dict = {}
 jrpc2cfg: list | dict = {}
-
-# regex
-CODE_EXP = re.compile(r"^(\d+)-")
 
 # Responses from the console are high to low
 # PC data is read from low to high
@@ -195,159 +192,6 @@ class UTC(tzinfo):
 	def dst(self, dt):
 		return ZERO
 
-class XBDMShlex(shlex):
-	def __init__(self, *args, **kwargs):
-		kwargs["posix"] = True
-		super(XBDMShlex, self).__init__(*args, **kwargs)
-		self.escape = ""  #remove the \ escape
-		self.whitespace_split = True
-
-class XBDMParam:
-	def __init__(self, value: Any):
-		self.value = value
-
-	def __int__(self) -> int:
-		return self.as_int()
-
-	def __str__(self) -> str:
-		return self.as_str()
-
-	def __bytes__(self) -> bytes:
-		return self.as_bytes()
-
-	def is_none(self) -> bool:
-		return self.value is None
-
-	def as_int(self) -> int:
-		if isinstance(self.value, str):
-			if self.value.startswith("0x"):
-				return int.from_bytes(bytes.fromhex(self.value[2:].rjust(8, "0")), "big")
-		return int(self.value)
-
-	def as_bool(self) -> bool:
-		return self.as_str().lower() in ["true", "1"]
-
-	def as_str(self) -> str:
-		return str(self.value)
-
-	def as_bytes(self) -> bytes:
-		return bytes.fromhex(self.value)
-
-class XBDMCommand:
-	name = None
-	code = 0
-	args = dict()
-	flags = []
-	formatted = None
-
-	def __init__(self):
-		self.reset()
-
-	def __enter__(self):
-		return self
-
-	def __exit__(self, exc_type, exc_val, exc_tb):
-		pass
-
-	def __bytes__(self) -> bytes:
-		return self.get_output(True)
-
-	def reset(self) -> None:
-		self.name = None
-		self.code = 0
-		self.args = dict()
-		self.flags = []
-		self.formatted = None
-
-	@staticmethod
-	def parse(command: str):
-		sh = XBDMShlex(command)
-		command = list(sh)
-		cmd = XBDMCommand()
-		match = CODE_EXP.match(command[0])
-		if match:  # response
-			cmd.set_code(int(match.group(1)))
-		else:  # command
-			cmd.set_name(command[0])
-		if len(command) > 1:
-			for single in command[1:]:
-				if "=" in single:
-					(key, value) = single.split("=", 1)
-					cmd.set_param(key, value)
-				else:
-					if not cmd.flag_exists(single):
-						cmd.set_flag(single)
-		return cmd
-
-	def set_name(self, name: str) -> None:
-		self.name = name
-
-	def set_code(self, code: int) -> None:
-		# self.name = str(code) + "-"
-		self.code = code
-
-	def get_code(self) -> int:
-		return self.code
-
-	def get_flags(self) -> list[str]:
-		return self.flags
-
-	def flag_exists(self, key: str) -> bool:
-		return key.lower() in self.flags
-
-	def param_exists(self, key: str, lc_check: bool = False) -> bool:
-		return not self.get_param(key, lc_check).is_none()
-
-	def set_flag(self, key: str) -> Any:
-		return self.flags.append(key.lower())
-
-	def set_param(self, key: str, value: str | int | bytes | bytearray | bool, quoted: bool = False) -> XBDMParam:
-		key = key.lower()
-		if isinstance(value, bytes) or isinstance(value, bytearray):
-			value = value.decode("UTF8")
-		elif quoted:
-			value = "\"" + value + "\""
-		elif isinstance(value, str):
-			value = value
-		elif isinstance(value, int):
-			if 0 <= value <= 0xFFFFFFFF:
-				value = "0x" + value.to_bytes(4, "big").hex()
-			elif 0 <= value <= 0xFFFFFFFFFFFFFFFF:
-				value = "0x" + value.to_bytes(8, "big").hex()
-		elif isinstance(value, bool):
-			value = "1" if value else "0"
-		self.args[key] = value
-		return XBDMParam(value)
-
-	def get_params(self) -> dict:
-		return self.args
-
-	def get_param(self, key: str, lc_check: bool = False) -> XBDMParam:
-		key = key.lower()
-		val = self.args.get(key)
-		if lc_check and val is None:
-			val = self.args.get(key)
-		return XBDMParam(val)
-
-	def get_output(self, as_bytes: bool = False, line_ending: bool = True) -> str | bytes | bytearray:
-		o = ""
-		if self.name is not None:  # commands only
-			o = self.name
-		if self.code is not None and self.code != 0:  # replies only
-			o = str(self.code) + "-"
-		if len(self.args) > 0:
-			o += " "
-			o += " ".join([(key + "=" + value) for (key, value) in self.args.items()])
-		if len(self.flags) > 0:
-			o += " "
-			o += " ".join(self.flags)
-		if line_ending:
-			o += "\r\n"
-		if as_bytes:
-			return o.encode("UTF8")
-		# self.reset()
-		return o
-
 class XBDMServerProtocol(asyncio.Protocol):
 	# file transfer variables
 	# single file
@@ -472,25 +316,25 @@ class XBDMServerProtocol(asyncio.Protocol):
 					print("xbupdate!recovery")
 				case "xbupdate!sysfileupd":
 					print("xbupdate!sysfileupd")
-					file_name = parsed.get_param("name").as_str()
+					file_name = parsed.get_param("name")
 					file_path = xbdm_to_device_path(file_name)
-					if parsed.param_exists("remove") and parsed.get_param("remove").as_bool():  # deleting file
+					if parsed.param_exists("remove") and parsed.get_param("remove"):  # deleting file
 						print(f"Deleting file \"{file_name}\"...")
 						if isfile(file_path):
 							remove(file_path)
 						self.send_single_line("200- OK")
-					elif parsed.param_exists("removedir") and parsed.get_param("removedir").as_bool():  # deleting directory
+					elif parsed.param_exists("removedir") and parsed.get_param("removedir"):  # deleting directory
 						print(f"Deleting directory \"{file_name}\"...")
 						if isdir(file_path):
 							rmtree(file_path, True)
 						self.send_single_line("200- OK")
 					elif parsed.param_exists("size"):  # receiving file
-						file_size = parsed.get_param("size").as_int()
+						file_size = parsed.get_param("size")
 						print(f"Receiving single file \"{file_name}\" (0x{file_size:X})...")
-						print(f"0x{parsed.get_param('crc').as_int():X}")
+						print(f"0x{parsed.get_param('crc'):X}")
 						self.send_single_line("204- send binary data")
 						self.file_data_left = file_size
-						self.file_cksm = parsed.get_param("crc").as_int()
+						self.file_cksm = parsed.get_param("crc")
 						self.receiving_file = True
 						self.receiving_type = ReceiveFileType.XBUPDATE_SINGLE
 						self.file_path = file_path
@@ -498,7 +342,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 						print(f"Modifying file \"{file_name}\"...")
 						self.send_single_line("200- OK")
 					elif parsed.param_exists("localsrc"):
-						file_name_old = parsed.get_param("localsrc").as_str()
+						file_name_old = parsed.get_param("localsrc")
 						file_path_old = xbdm_to_device_path(file_name_old)
 						print(f"Modifying file \"{file_name_old}\" -> \"{file_name}\"...")
 						self.send_single_line("200- OK")
@@ -535,7 +379,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 				case "consolefeatures":
 					# Basic JRPC2 Support - Byrom
 					if parsed.param_exists("ver") and parsed.param_exists("type"): # is jrpc2 command
-						type_param = parsed.get_param("type").as_int()
+						type_param = parsed.get_param("type")
 						# type 0 to 8 are related to call function by the look of it
 						#if type_param == "1": # example when loading a plugin
 						#    print("JRPC2 - One of the call function commands received! Responding...")
@@ -591,7 +435,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					else:
 						print("Sending console features...")
 						if parsed.param_exists("params"):  #extended query
-							print("Feature Params: " + parsed.get_param("params").as_str())
+							print("Feature Params: " + parsed.get_param("params"))
 							self.send_single_line("200- S_OK")
 						else:  #simple query
 							self.send_single_line("200- " + cfg["console_type"])
@@ -605,11 +449,11 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_single_line("200- addr=0x" + addr)
 				case "systime":
 					print("Sending system time...")
-					(time_low, time_high) = uint64_to_uint32(system_time(), True)
+					(time_low, time_high) = uint64_to_uint32(system_time())
 					with XBDMCommand() as cmd:
 						cmd.set_code(200)
-						cmd.set_param("high", time_high)
-						cmd.set_param("low", time_low)
+						cmd.set_param("high", time_high, XBDMType.DWORD)
+						cmd.set_param("low", time_low, XBDMType.DWORD)
 						cmd_data = cmd.get_output(True)
 					self.transport.write(cmd_data)
 				case "systeminfo":
@@ -655,16 +499,16 @@ class XBDMServerProtocol(asyncio.Protocol):
 						data = f.read()
 
 					with XBDMCommand() as cmd:
-						cmd.set_param("pitch", p)
-						cmd.set_param("width", ow)
-						cmd.set_param("height", oh)
-						cmd.set_param("format", D3DFMT_A8R8G8B8)
-						cmd.set_param("offsetx", 0)
-						cmd.set_param("offsety", 0)
-						cmd.set_param("framebuffersize", len(data))  # 0x398000
-						cmd.set_param("sw", sw)
-						cmd.set_param("sh", sh)
-						cmd.set_param("colorspace", 0)
+						cmd.set_param("pitch", p, XBDMType.DWORD)
+						cmd.set_param("width", ow, XBDMType.DWORD)
+						cmd.set_param("height", oh, XBDMType.DWORD)
+						cmd.set_param("format", D3DFMT_A8R8G8B8, XBDMType.DWORD)
+						cmd.set_param("offsetx", 0, XBDMType.DWORD)
+						cmd.set_param("offsety", 0, XBDMType.DWORD)
+						cmd.set_param("framebuffersize", len(data), XBDMType.DWORD)  # 0x398000
+						cmd.set_param("sw", sw, XBDMType.DWORD)
+						cmd.set_param("sh", sh, XBDMType.DWORD)
+						cmd.set_param("colorspace", 0, XBDMType.DWORD)
 						self.transport.write(cmd.get_output(True, True))
 					self.transport.write(data)
 				case "drivelist":
@@ -682,15 +526,15 @@ class XBDMServerProtocol(asyncio.Protocol):
 					lines = []
 					for single in cfg["modules"]:
 						with XBDMCommand() as cmd:
-							cmd.set_param("name", single["name"], True)
-							cmd.set_param("base", single["base"])
-							cmd.set_param("size", single["size"])
-							cmd.set_param("check", 0)
-							cmd.set_param("timestamp", 0)
-							cmd.set_param("pdata", 0)
-							cmd.set_param("psize", 0)
-							cmd.set_param("thread", 0)
-							cmd.set_param("osize", 0)
+							cmd.set_param("name", single["name"], XBDMType.QUOTED_STRING)
+							cmd.set_param("base", single["base"], XBDMType.DWORD)
+							cmd.set_param("size", single["size"], XBDMType.DWORD)
+							cmd.set_param("check", 0, XBDMType.DWORD)
+							cmd.set_param("timestamp", 0, XBDMType.DWORD)
+							cmd.set_param("pdata", 0, XBDMType.DWORD)
+							cmd.set_param("psize", 0, XBDMType.DWORD)
+							cmd.set_param("thread", 0, XBDMType.DWORD)
+							cmd.set_param("osize", 0, XBDMType.DWORD)
 							cmd_data = cmd.get_output(True)
 						lines.append(cmd_data)
 					self.send_multi_line(lines)
@@ -717,17 +561,17 @@ class XBDMServerProtocol(asyncio.Protocol):
 						print(f"Requesting free space for drive label {drive_label}...")
 						(low, high) = uint64_to_uint32(cfg["console_hdd_size"], True, True)
 						with XBDMCommand() as cmd:
-							cmd.set_param("freetocallerlo", low)
-							cmd.set_param("freetocallerhi", high)
-							cmd.set_param("totalbyteslo", low)
-							cmd.set_param("totalbyteshi", high)
-							cmd.set_param("totalfreebyteslo", low)
-							cmd.set_param("totalfreebyteshi", high)
+							cmd.set_param("freetocallerlo", low, XBDMType.DWORD)
+							cmd.set_param("freetocallerhi", high, XBDMType.DWORD)
+							cmd.set_param("totalbyteslo", low, XBDMType.DWORD)
+							cmd.set_param("totalbyteshi", high, XBDMType.DWORD)
+							cmd.set_param("totalfreebyteslo", low, XBDMType.DWORD)
+							cmd.set_param("totalfreebyteshi", high, XBDMType.DWORD)
 							cmd_data = cmd.get_output(True)
 						self.send_multi_line([cmd_data])
 				case "dirlist":
 					if parsed.param_exists("NAME"):
-						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
+						phys_path = xbdm_to_local_path(parsed.get_param("NAME"))
 						if isdir(phys_path):
 							print(f"Requesting directory listing for {phys_path}...")
 
@@ -740,13 +584,13 @@ class XBDMServerProtocol(asyncio.Protocol):
 								(mtime_low, mtime_high) = uint64_to_uint32(modify_time_to_file_time(single_path), True)
 								(size_low, size_high) = uint64_to_uint32(single_size, True)
 								with XBDMCommand() as cmd:
-									cmd.set_param("name", single, True)
-									cmd.set_param("sizehi", size_high)
-									cmd.set_param("sizelo", size_low)
-									cmd.set_param("createhi", ctime_high)
-									cmd.set_param("createlo", ctime_low)
-									cmd.set_param("changehi", mtime_high)
-									cmd.set_param("changelo", mtime_low)
+									cmd.set_param("name", single, XBDMType.QUOTED_STRING)
+									cmd.set_param("sizehi", size_high, XBDMType.DWORD)
+									cmd.set_param("sizelo", size_low, XBDMType.DWORD)
+									cmd.set_param("createhi", ctime_high, XBDMType.DWORD)
+									cmd.set_param("createlo", ctime_low, XBDMType.DWORD)
+									cmd.set_param("changehi", mtime_high, XBDMType.DWORD)
+									cmd.set_param("changelo", mtime_low, XBDMType.DWORD)
 									cmd_data = cmd.get_output(True, True)
 								lines.append(cmd_data)
 							self.send_multi_line(lines, False)
@@ -760,7 +604,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_single_line("200- OK")
 				case "getfileattributes":
 					if parsed.param_exists("NAME"):
-						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
+						phys_path = xbdm_to_local_path(parsed.get_param("NAME"))
 						print(f"Requesting file attributes for \"{phys_path}\"...")
 						if isfile(phys_path):
 							print("File exists...")
@@ -769,12 +613,12 @@ class XBDMServerProtocol(asyncio.Protocol):
 							(mtime_low, mtime_high) = uint64_to_uint32(modify_time_to_file_time(phys_path), True)
 							(size_low, size_high) = uint64_to_uint32(file_size, True)
 							with XBDMCommand() as cmd:
-								cmd.set_param("sizehi", size_high)
-								cmd.set_param("sizelo", size_low)
-								cmd.set_param("createhi", ctime_high)
-								cmd.set_param("createlo", ctime_low)
-								cmd.set_param("changehi", mtime_high)
-								cmd.set_param("changelo", mtime_low)
+								cmd.set_param("sizehi", size_high, XBDMType.DWORD)
+								cmd.set_param("sizelo", size_low, XBDMType.DWORD)
+								cmd.set_param("createhi", ctime_high, XBDMType.DWORD)
+								cmd.set_param("createlo", ctime_low, XBDMType.DWORD)
+								cmd.set_param("changehi", mtime_high, XBDMType.DWORD)
+								cmd.set_param("changelo", mtime_low, XBDMType.DWORD)
 								cmd_data = cmd.get_output(True)
 							self.send_multi_line([cmd_data])
 						else:
@@ -782,24 +626,24 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("402- file not found")
 				case "mkdir":
 					if parsed.param_exists("NAME"):
-						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
+						phys_path = xbdm_to_local_path(parsed.get_param("NAME"))
 						if not isfile(phys_path) and not isdir(phys_path):
 							print(f"Created directory \"{phys_path}\"...")
 							makedirs(phys_path, exist_ok=True)
 							self.send_single_line("200- OK")
 				case "getfile":
 					if parsed.param_exists("NAME"):
-						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
+						phys_path = xbdm_to_local_path(parsed.get_param("NAME"))
 						if isfile(phys_path):
 							print(f"Sending file @ \"{phys_path}\"...")
 							with open(phys_path, "rb") as f:
 								data = f.read()
-							self.transport.write(b"203- binary response follows\r\n")
+							self.send_single_line("203- binary response follows")
 							self.transport.write(pack("<I", len(data)))
 							self.transport.write(data)
 				case "sendvfile":
 					if parsed.param_exists("COUNT"):
-						file_count = parsed.get_param("COUNT").as_int()
+						file_count = parsed.get_param("COUNT")
 						print(f"Receiving {file_count} file(s)...")
 						if file_count > 0:
 							self.send_single_line("204- send binary data")
@@ -809,8 +653,8 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("203- binary response follows")
 							self.transport.write((b"\x00" * 4) * self.num_files_total)
 				case "sendfile":
-					file_name = parsed.get_param("NAME").as_str()
-					file_size = parsed.get_param("LENGTH").as_int()
+					file_name = parsed.get_param("NAME")
+					file_size = parsed.get_param("LENGTH")
 					print(f"Receiving single file \"{file_name}\" (0x{file_size:X})...")
 					self.send_single_line("204- send binary data")
 					self.file_data_left = file_size
@@ -819,15 +663,15 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.file_path = xbdm_to_device_path(file_name)
 				case "rename":
 					if parsed.param_exists("NAME") and parsed.param_exists("NEWNAME"):
-						old_file_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
-						new_file_path = xbdm_to_local_path(parsed.get_param("NEWNAME").as_str())
+						old_file_path = xbdm_to_local_path(parsed.get_param("NAME"))
+						new_file_path = xbdm_to_local_path(parsed.get_param("NEWNAME"))
 						if isfile(old_file_path) or isdir(old_file_path):
 							print(f"Renaming \"{old_file_path}\" to \"{new_file_path}\"...")
 							rename(old_file_path, new_file_path)
 							self.send_single_line("200- OK")
 				case "delete":
 					if parsed.param_exists("NAME"):
-						phys_path = xbdm_to_local_path(parsed.get_param("NAME").as_str())
+						phys_path = xbdm_to_local_path(parsed.get_param("NAME"))
 						if parsed.flag_exists("DIR"):
 							print(f"Deleting folder @ \"{phys_path}\"...")
 							rmtree(phys_path, True)
@@ -839,13 +683,13 @@ class XBDMServerProtocol(asyncio.Protocol):
 					if parsed.param_exists("addr") and parsed.param_exists("data"):
 						print(parsed.get_param("addr"))
 						setmem_addr = parsed.get_param("addr")
-						setmem_data = parsed.get_param("data").as_bytes()
+						setmem_data = parsed.get_param("data")
 						print(f"Attempted to set {len(setmem_data)} byte(s) @ {setmem_addr}...")
 						self.send_single_line(f"200- set {str(len(setmem_data))} bytes")
 				case "getmem" | "getmemex":
 					if parsed.param_exists("ADDR") and parsed.param_exists("LENGTH"):
-						addr = parsed.get_param("ADDR").as_int()
-						length = parsed.get_param("LENGTH").as_int()
+						addr = parsed.get_param("ADDR")
+						length = parsed.get_param("LENGTH")
 						# length = unpack("!I", bytes.fromhex(length.replace("0x", "")))[0]
 						print(f"Attempted to get {length} byte(s) @ {addr}...")
 						self.send_single_line("203- binary response follows")
@@ -855,8 +699,8 @@ class XBDMServerProtocol(asyncio.Protocol):
 						self.transport.write(pack("<H", 1024) + (b"suckcock" * 128))
 				case "setsystime":
 					if parsed.param_exists("clocklo") and parsed.param_exists("clockhi") and parsed.param_exists("tz"):
-						sys_time_low = parsed.get_param("clocklo").as_int()
-						sys_time_high = parsed.get_param("clockhi").as_int()
+						sys_time_low = parsed.get_param("clocklo")
+						sys_time_high = parsed.get_param("clockhi")
 						#timezone = bool(parsed.get_param("tz"))
 						sys_time = uint32_to_uint64(sys_time_low, sys_time_high)
 						print(f"Setting system time to {sys_time}...")
