@@ -28,6 +28,7 @@ def xbdm_to_device_path(path: str) -> str:
 	p = Path(XBDM_DIR)
 	p /= path.replace(":\\", "/").replace("\\", "/")
 	p = p.absolute()
+	print(str(p))
 	# p.parent.mkdir(parents=True, exist_ok=True)
 	return str(p)
 
@@ -42,15 +43,18 @@ def main() -> int:
 	mf = read_manifest()
 
 	with XBUpdateXBDMClient(args.host) as cli:
-		BaseXBDMClient.upload_file(cli, xbdm_to_device_path("\\Device\\Flash\\xbupdate.xex"), "\\Device\\Flash\\xbupdate.xex")
+		# BaseXBDMClient.upload_file(cli, xbdm_to_device_path("\\Device\\Flash\\xbupdate.xex"), "\\Device\\Flash\\xbupdate.xex")
+		# cli.send_file(str(Path(XBDM_DIR) / "xbupdate.xex"), "\\Device\\Flash\\xbupdate.xex")
 
-		BaseXBDMClient.recovery(cli)
+		# BaseXBDMClient.recovery(cli)
 
-		print("Waiting 30 seconds for recovery to boot...")
-		sleep(30)
+		# print("Waiting 30 seconds for recovery to boot...")
+		# sleep(30)
 
 		cli.draw_text("UwU")
-		cli.version()
+
+		rep = cli.version()
+
 		rep = cli.valid_device(1888, 210)
 
 		dev_valid = rep.get_param("valid")
@@ -60,7 +64,7 @@ def main() -> int:
 
 		rep = cli.validate_hdd_partitions()
 
-		hdd_valid = rep.get_param("valid")  # .as_bool()
+		hdd_valid = rep.get_param("valid") == 1
 
 		assert hdd_valid, "No valid device found to write recovery to!"
 
@@ -93,11 +97,11 @@ def main() -> int:
 
 		# upload files
 		# shadowboot
-		cli.upload_file(args.image, "\\Device\\Harddisk0\\Partition1\\xboxrom_update.bin")
+		cli.system_file_update(args.image, "\\Device\\Harddisk0\\Partition1\\xboxrom_update.bin")
 
 		# system files
 		for remote_path in mf["upd_files_to_upload_default"]:
-			cli.upload_file(xbdm_to_device_path(remote_path), remote_path)
+			cli.system_file_update(xbdm_to_device_path(remote_path), remote_path)
 
 		# aux and ext
 		#for remote_path in MANIFEST["upd_files_to_upload_samples"]:

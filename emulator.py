@@ -303,7 +303,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_single_line("200- OK")
 					print("xbupdate!isflashclean")
 				case "xbupdate!instrecoverytype":
-					self.send_single_line("recoverytype=5 hresult=0x00000491")
+					self.send_single_line("200- recoverytype=5 hresult=0x00000491")
 					print("xbupdate!instrecoverytype")
 				case "xbupdate!configure":
 					self.send_single_line("200- OK")

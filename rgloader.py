@@ -8,27 +8,24 @@ XBDM_HOST = "192.168.1.194"
 
 def main() -> int:
 	with RGLoaderXBDMClient(XBDM_HOST) as cli:
-		"""
-		cli.poke_byte(0, 0xFF)
-		data = cli.peek_bytes(0, 0x10)
-		print(data.hex().upper())
+		# addr = 0x10000 - 0x60
+		# data = cli.peek_bytes(addr, 0x60)
+		# for i in range(0, len(data), 8):
+		# 	print(data[i:i + 8].hex().upper())
 
-		cli.poke_word(0, 0xFFFF)
-		data = cli.peek_bytes(0, 0x10)
-		print(data.hex().upper())
+		# cli.poke_byte(0, 0xFF)
 
-		cli.poke_dword(0, 0xFFFFFFFF)
-		data = cli.peek_bytes(0, 0x10)
-		print(data.hex().upper())
+		#for x in cli.dirlist("Hdd:\\"):
+		#	if x.flag_exists("directory"):
+		#		print("Dir: ", x.get_param("name"))
+		#	else:
+		#		print("File:", x.get_param("name"))
 
-		cli.poke_qword(0, 0xFFFFFFFFFFFFFFFF)
-		data = cli.peek_bytes(0, 0x10)
-		print(data.hex().upper())
+		#print(cli.get_file("Hdd:\\shadowboot.bin", "shadowboot.bin"))
+		#if cli.send_file("config.json", "Hdd:\\config.json"):
+		#	print(cli.delete("Hdd:\\config.json"))
 
-		cli.poke_bytes(0, bytes.fromhex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"))
-		data = cli.peek_bytes(0, 0x10)
-		print(data.hex().upper())
-		"""
+		print(cli.file_exists("Hdd:\\shadowboot.bin"))
 
 		for i in range(12):
 			addr = 0x8000020000020000 + (i * 0x200)
