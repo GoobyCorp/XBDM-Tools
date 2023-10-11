@@ -37,6 +37,123 @@ MAKE_HRESULT = lambda x, y, z: (x << 31) | (y << 16) | z
 XBDM_HRESERR = lambda x: MAKE_HRESULT(1, FACILITY_XBDM, x)
 XBDM_HRESSUCC = lambda x: MAKE_HRESULT(0, FACILITY_XBDM, x)
 
+"""
+LPCSTR SzStdResponse(HRESULT hr)
+{
+    LPCSTR pszResp;
+
+    switch(hr) {
+    case XBDM_NOSUCHFILE:
+        pszResp = "file not found";
+        break;
+    case XBDM_NOMODULE:
+        pszResp = "no such module";
+        break;
+    case XBDM_MEMUNMAPPED:
+        pszResp = "memory not mapped";
+        break;
+    case XBDM_NOTHREAD:
+        pszResp = "no such thread";
+        break;
+    case XBDM_INVALIDCMD:
+        pszResp = "unknown command";
+        break;
+    case XBDM_NOTSTOPPED:
+        pszResp = "not stopped";
+        break;
+    case XBDM_MUSTCOPY:
+        pszResp = "file must be copied";
+        break;
+    case XBDM_ALREADYEXISTS:
+        pszResp = "file already exists";
+        break;
+    case XBDM_DIRNOTEMPTY:
+        pszResp = "directory not empty";
+        break;
+    case XBDM_BADFILENAME:
+        pszResp = "filename is invalid";
+        break;
+    case XBDM_CANNOTCREATE:
+        pszResp = "file cannot be created";
+        break;
+    case XBDM_DEVICEFULL:
+        pszResp = "no room on device";
+        break;
+    case XBDM_MULTIRESPONSE:
+        pszResp = "multiline response follows";
+        break;
+    case XBDM_BINRESPONSE:
+        pszResp = "binary response follows";
+        break;
+    case XBDM_READYFORBIN:
+        pszResp = "send binary data";
+        break;
+    case XBDM_CANNOTACCESS:
+        pszResp = "access denied";
+        break;
+    case XBDM_NOTDEBUGGABLE:
+        pszResp = "not debuggable";
+        break;
+    case XBDM_BADCOUNTTYPE:
+        pszResp = "type invalid";
+        break;
+    case XBDM_COUNTUNAVAILABLE:
+        pszResp = "data not available";
+        break;
+    case XBDM_NOTLOCKED:
+        pszResp = "box is not locked";
+        break;
+    case XBDM_KEYXCHG:
+        pszResp = "key exchange required";
+        break;
+    case XBDM_MUSTBEDEDICATED:
+        pszResp = "dedicated connection required";
+        break;
+    case E_OUTOFMEMORY:
+        pszResp = "out of memory";
+        break;
+    case E_UNEXPECTED:
+        pszResp = "unexpected error";
+        break;
+    case E_INVALIDARG:
+        pszResp = "bad parameter";
+        break;
+    case XBDM_NOERR:
+        pszResp = "OK";
+        break;
+    default:
+        pszResp = "";
+        break;
+    }
+    return pszResp;
+}
+
+HRESULT HrFromStatus(NTSTATUS st, HRESULT hrDefault)
+{
+    switch(st) {
+    case STATUS_DIRECTORY_NOT_EMPTY:
+        return XBDM_DIRNOTEMPTY;
+    case STATUS_OBJECT_NAME_COLLISION:
+        return XBDM_ALREADYEXISTS;
+    case STATUS_OBJECT_PATH_NOT_FOUND:
+    case STATUS_OBJECT_NAME_NOT_FOUND:
+        return XBDM_NOSUCHFILE;
+    case STATUS_OBJECT_PATH_INVALID:
+    case STATUS_OBJECT_NAME_INVALID:
+        return XBDM_BADFILENAME;
+    case STATUS_ACCESS_DENIED:
+        return XBDM_CANNOTACCESS;
+    case STATUS_DISK_FULL:
+        return XBDM_DEVICEFULL;
+    case STATUS_INSUFFICIENT_RESOURCES:
+        return E_OUTOFMEMORY;
+    case STATUS_INVALID_HANDLE:
+        return E_INVALIDARG;
+    }
+    return hrDefault;
+}
+"""
+
 def dt_to_filetime(dt):
 	if (dt.tzinfo is None) or (dt.tzinfo.utcoffset(dt) is None):
 		dt = dt.replace(tzinfo=UTC())
@@ -55,6 +172,65 @@ def uint64_to_uint32(num: int, as_hex: bool = False, as_bytes: bool = False) -> 
 			return (bytes(low, "utf8"), bytes(high, "utf8"))
 		return (low, high)
 	return i
+
+def next_space(s: str, start: int = None, stop: int = None) -> int:
+	for c in ["\x00", "\r", " "]:
+		loc = s.find(c, start, stop)
+		if loc > -1:
+			return loc
+	return len(s)
+
+def dw_from_sz(sz: str) -> int | None:
+	if sz.startswith('0x') or sz.startswith('-0x'):
+		return int(sz, 16)
+	elif sz.startswith('0o') or sz.startswith('-0o'):
+		return int(sz, 8)
+	else:
+		return int(sz, 10)
+
+def pch_get_param(sz_cmd: str, sz_key: str, f_need_value: bool) -> str | None:
+	if f_need_value:
+		sz_key += "="
+
+	start = sz_cmd.find(sz_key)
+	if start == -1:
+		return None
+	start += len(sz_key)
+
+	stop = next_space(sz_cmd, start)
+	if stop == -1:
+		stop = len(sz_cmd) - start
+
+	return sz_cmd[start:stop]
+
+def get_param(sz_line: str) -> str:
+	if sz_line.startswith('"') and sz_line.endswith('"'):
+		return sz_line[1:-1].replace('"', "")
+	return sz_line
+
+def f_get_sz_param(sz_line: str, sz_key: str) -> str | None:
+	sz_line = pch_get_param(sz_line, sz_key, True)
+	if not sz_line:
+		return None
+	return get_param(sz_line)
+
+def f_get_dw_param(sz_line: str, sz_key: str) -> int | None:
+	sz_line = pch_get_param(sz_line, sz_key, True)
+	if not sz_line:
+		return None
+	return dw_from_sz(get_param(sz_line))
+
+def f_get_qw_param(sz_line: str, sz_key: str) -> int | None:
+	sz_line = pch_get_param(sz_line, sz_key, True)
+	if not sz_line:
+		return None
+	if not sz_line.startswith("0q"):
+		return None
+	try:
+		(v,) = unpack(">Q", bytes.fromhex(sz_line[2:].rjust(16, "0")))
+	except:
+		return None
+	return v
 
 class UTC(tzinfo):
 	def utcoffset(self, dt):
@@ -143,6 +319,7 @@ class XBDMShlex(shlex):
 class XBDMCommand:
 	name = None
 	code = 0
+	line = None
 	args = dict[str, tuple[Any, XBDMType]]
 	flags = list[str]
 	formatted = None
@@ -159,6 +336,7 @@ class XBDMCommand:
 	def reset(self) -> None:
 		self.name = None
 		self.code = 0
+		self.line = None
 		self.args = dict()
 		self.flags = []
 		self.formatted = None
@@ -231,6 +409,7 @@ class XBDMCommand:
 	@staticmethod
 	def parse(command: str):
 		cmd = XBDMCommand()
+		cmd.line = command
 		sh = XBDMShlex(command)
 		parts = list(sh)
 
@@ -1086,6 +1265,27 @@ class RGLoaderXBDMClient(BaseXBDMClient):
 		self.expect_ok()
 		self.disconnect_with_bye()
 
+	def shadowboot(self, name: str) -> None:
+		cmd = XBDMCommand()
+		cmd.set_name("rgloader!shadowboot")
+		cmd.set_param("name", name, XBDMType.QUOTED_STRING)
+
+		self.connect_and_check()
+		self.send_command(cmd)
+		self.disconnect()
+
+	def shadowboot_from_memory(self, data: bytes | bytearray) -> None:
+		cmd = XBDMCommand()
+		cmd.set_name("rgloader!shadowbootfrommemory")
+		cmd.set_param("size", len(data), XBDMType.DWORD)
+
+		self.connect_and_check()
+		self.send_command(cmd)
+		self.expect_send_binary()
+		self.write(data)
+		self.disconnect()
+		# self.disconnect_with_bye()
+
 __all__ = [
 	# variables
 	"XBDM_PORT",
@@ -1096,8 +1296,15 @@ __all__ = [
 	"XBDMCode",
 	"XBDMType",
 
+	# functions
+	"dw_from_sz",
+	"pch_get_param",
+	"get_param",
+	"f_get_sz_param",
+	"f_get_dw_param",
+	"f_get_qw_param",
+
 	# classes
-	"XBDMShlex",
 	"XBDMCommand",
 	"BaseXBDMClient",
 	"XBUpdateXBDMClient",

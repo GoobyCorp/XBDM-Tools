@@ -4,10 +4,17 @@ from struct import unpack_from
 
 from xbdm_common import *
 
-XBDM_HOST = "192.168.1.194"
+XBDM_HOST = "192.168.1.36"
 
 def main() -> int:
 	with RGLoaderXBDMClient(XBDM_HOST) as cli:
+		with open(r"Z:\Programming\Projects\Python\Xbox 360 Crypto\Output\Zero.bin", "rb") as f:
+			data = f.read()
+
+		cli.shadowboot_from_memory(data)
+
+		return 0
+
 		# addr = 0x10000 - 0x60
 		# data = cli.peek_bytes(addr, 0x60)
 		# for i in range(0, len(data), 8):
@@ -24,8 +31,6 @@ def main() -> int:
 		#print(cli.get_file("Hdd:\\shadowboot.bin", "shadowboot.bin"))
 		#if cli.send_file("config.json", "Hdd:\\config.json"):
 		#	print(cli.delete("Hdd:\\config.json"))
-
-		print(cli.file_exists("Hdd:\\shadowboot.bin"))
 
 		for i in range(12):
 			addr = 0x8000020000020000 + (i * 0x200)
