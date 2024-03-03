@@ -1,36 +1,16 @@
 #!/usr/bin/env python3
 
-from time import sleep
 from json import loads
 from pathlib import Path
 from argparse import ArgumentParser
 
 from xbdm_common import *
 
-# xbdm variables
-XBDM_PORT = 730
-XBDM_BUFF_SIZE = 1460
-XBDM_DIR = "DEVICES"
-XBDM_NEWLINE = b"\r\n"
-
 # constants
 MANIFEST_FILE = "recovery_manifest_21256_18.json"
 
 def read_manifest() -> dict:
 	return loads(Path(MANIFEST_FILE).read_text())
-
-def xbdm_to_device_path(path: str) -> str:
-	if path.startswith("\\Device\\"):
-		path = path[len("\\Device\\"):]
-	elif path.startswith("\\"):
-		path = path[1:]
-
-	p = Path(XBDM_DIR)
-	p /= path.replace(":\\", "/").replace("\\", "/")
-	p = p.absolute()
-	print(str(p))
-	# p.parent.mkdir(parents=True, exist_ok=True)
-	return str(p)
 
 def main() -> int:
 	parser = ArgumentParser(description="A script to recover Xbox 360 devkits")

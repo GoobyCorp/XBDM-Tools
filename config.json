@@ -1,20 +1,32 @@
 {
-  "debug": false,
-  "username": "DESKTOP-XXXXXXX",
-  "console_name": "XDK",
-  "console_type": "DevKit",
-  "console_features": "DEBUGGING 1GB_RAM",
-  "console_hdd_size": 268435456000,
-  "hdd_enabled": true,
-  "platform": "Waternoose",
-  "system": "Jasper",
-  "base_kernel": "2.0.1888.0",
-  "kernel": "2.0.17511.0",
-  "xdk": "2.0.21256.0",
-  "current_title_path": "HDD:\\Filesystems\\17489-dev\\xshell.xex",
-  "screenshot_file": "screenshot.bin",
-  "alternate_address": "1.2.3.4",
-  "modules": [
-    {"name": "fuckoff.xex", "base": 4919, "size": 4096}
-  ]
+  "stock": {
+    "debug": false,
+    "username": "DESKTOP-XXXXXXX",
+    "console_name": "XDK",
+    "console_type": "DevKit",
+    "console_features": "DEBUGGING 1GB_RAM",
+    "console_hdd_size": 268435456000,
+    "hdd_enabled": true,
+    "platform": "Waternoose",
+    "system": "Jasper",
+    "base_kernel": "2.0.1888.0",
+    "kernel": "2.0.17511.0",
+    "xdk": "2.0.21256.0",
+    "current_title_path": "HDD:\\Filesystems\\17489-dev\\xshell.xex",
+    "screenshot_file": "screenshot.bin",
+    "alternate_address": "1.2.3.4",
+    "modules": [
+      {"name": "fuckoff.xex", "base": 4919, "size": 4096}
+    ]
+  },
+  "jrpc2": {
+    "MoboType": "Trinity",
+    "CPUKey": "13371337133713371337133713371337",
+    "KernelVers": "17559",
+    "TitleID": "FFFE07D1",
+    "CPUTemp": 45,
+    "GPUTemp": 44,
+    "EDRAMTemp": 43,
+    "MOBOTemp": 39
+  }
 }

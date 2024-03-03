@@ -11,7 +11,7 @@ def main() -> int:
 		with open(r"Z:\Programming\Projects\Python\Xbox 360 Crypto\Output\Zero.bin", "rb") as f:
 			data = f.read()
 
-		cli.shadowboot_from_memory(data)
+		cli.shadowboot(data)
 
 		return 0
 

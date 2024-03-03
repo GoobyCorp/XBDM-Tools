@@ -1,18 +1,19 @@
 import asyncio
 from io import BytesIO
-from shlex import shlex, split
+from shlex import shlex
 from enum import IntEnum
 from pathlib import Path
 from calendar import timegm
 from shutil import copyfileobj
 from struct import pack, unpack
 from typing import Any, BinaryIO
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, UTC
 
 # pip install nest-asyncio
 import nest_asyncio
 
 # xbdm variables
+XBDM_DIR = "DEVICES"
 XBDM_PORT = 730
 XBDM_BUFF_SIZE = 1460
 XBDM_NEWLINE = b"\r\n"
@@ -154,23 +155,72 @@ HRESULT HrFromStatus(NTSTATUS st, HRESULT hrDefault)
 }
 """
 
+def is_int(s: str) -> str | int:
+	try:
+		return int(s)
+	except:
+		return s
+
 def dt_to_filetime(dt):
-	if (dt.tzinfo is None) or (dt.tzinfo.utcoffset(dt) is None):
-		dt = dt.replace(tzinfo=UTC())
 	ft = EPOCH_AS_FILETIME + (timegm(dt.timetuple()) * HUNDREDS_OF_NANOSECONDS)
 	return ft + (dt.microsecond * 10)
 
-def creation_time_to_file_time(path: str) -> int:
-	return dt_to_filetime(datetime.utcnow())
+def xbdm_to_local_path(path: str) -> str:
+	p = Path("DEVICES/Harddisk0/Partition1/")
+	p /= path.replace(":\\", "/").replace("\\", "/")
+	p = p.absolute()
+	p.parent.mkdir(parents=True, exist_ok=True)
+	return str(p)
 
-def uint64_to_uint32(num: int, as_hex: bool = False, as_bytes: bool = False) -> tuple[int, int] | tuple[bytes, bytes] | tuple[str, str]:
+def xbdm_to_device_path(path: str) -> str:
+	if path.startswith("\\Device\\"):
+		path = path[len("\\Device\\"):]
+	elif path.startswith("\\"):
+		path = path[1:]
+
+	p = Path(XBDM_DIR)
+	p /= path.replace(":\\", "/").replace("\\", "/")
+	p = p.absolute()
+	p.parent.mkdir(parents=True, exist_ok=True)
+	return str(p)
+
+def system_time() -> int:
+	dt1 = datetime(1, 1, 1, 23, 0, 0, tzinfo=UTC)
+	dt2 = datetime.now(UTC)
+	return int(abs(dt2 - dt1).total_seconds()) * 10000000
+
+def filetime_to_dt(ft) -> datetime:
+	# Get seconds and remainder in terms of Unix epoch
+	(s, ns100) = divmod(ft - EPOCH_AS_FILETIME, HUNDREDS_OF_NANOSECONDS)
+	# Convert to datetime object
+	dt = datetime.fromtimestamp(s, UTC)
+	# Add remainder in as microseconds. Python 3.2 requires an integer
+	dt = dt.replace(microsecond=(ns100 // 10))
+	return dt
+
+def creation_time_to_file_time(path: str) -> int:
+	#dt = datetime.utcfromtimestamp(getctime(path))
+	return dt_to_filetime(datetime.now(UTC))
+
+def modify_time_to_file_time(path: str) -> int:
+	#dt = datetime.utcfromtimestamp(getmtime(path))
+	return dt_to_filetime(datetime.now(UTC))
+
+def uint32_to_uint64(low: str | int, high: str | int) -> int:
+	if isinstance(low, str):
+		low = unpack("!I", bytes.fromhex(low.replace("0x", "")))[0]
+	if isinstance(high, str):
+		high = unpack("!I", bytes.fromhex(high.replace("0x", "")))[0]
+	return unpack("<Q", pack("<II", low, high))[0]
+
+def uint64_to_uint32(num: int, as_hex: bool = False, as_bytes: bool = False) -> tuple | list:
 	i = unpack("<II", pack("<Q", num))
 	if as_hex:
 		low = "0x" + pack("!I", i[0]).hex()
 		high = "0x" + pack("!I", i[1]).hex()
 		if as_bytes:
-			return (bytes(low, "utf8"), bytes(high, "utf8"))
-		return (low, high)
+			return [bytes(low, "utf8"), bytes(high, "utf8")]
+		return [low, high]
 	return i
 
 def next_space(s: str, start: int = None, stop: int = None) -> int:
@@ -231,16 +281,6 @@ def f_get_qw_param(sz_line: str, sz_key: str) -> int | None:
 	except:
 		return None
 	return v
-
-class UTC(tzinfo):
-	def utcoffset(self, dt):
-		return ZERO
-
-	def tzname(self, dt):
-		return "UTC"
-
-	def dst(self, dt):
-		return ZERO
 
 class XBDMCode(IntEnum):
 	OK = 200
@@ -407,7 +447,11 @@ class XBDMCommand:
 		return value
 
 	@staticmethod
-	def parse(command: str):
+	def parse(command: str | bytes | bytearray):
+		if isinstance(command, (bytes, bytearray)):
+			command = command.decode("UTF8")
+		command = command.strip()
+
 		cmd = XBDMCommand()
 		cmd.line = command
 		sh = XBDMShlex(command)
@@ -1265,18 +1309,9 @@ class RGLoaderXBDMClient(BaseXBDMClient):
 		self.expect_ok()
 		self.disconnect_with_bye()
 
-	def shadowboot(self, name: str) -> None:
+	def shadowboot(self, data: bytes | bytearray) -> None:
 		cmd = XBDMCommand()
 		cmd.set_name("rgloader!shadowboot")
-		cmd.set_param("name", name, XBDMType.QUOTED_STRING)
-
-		self.connect_and_check()
-		self.send_command(cmd)
-		self.disconnect()
-
-	def shadowboot_from_memory(self, data: bytes | bytearray) -> None:
-		cmd = XBDMCommand()
-		cmd.set_name("rgloader!shadowbootfrommemory")
 		cmd.set_param("size", len(data), XBDMType.DWORD)
 
 		self.connect_and_check()
@@ -1284,10 +1319,10 @@ class RGLoaderXBDMClient(BaseXBDMClient):
 		self.expect_send_binary()
 		self.write(data)
 		self.disconnect()
-		# self.disconnect_with_bye()
 
 __all__ = [
 	# variables
+	"XBDM_DIR",
 	"XBDM_PORT",
 	"XBDM_BUFF_SIZE",
 	"XBDM_NEWLINE",
@@ -1297,6 +1332,14 @@ __all__ = [
 	"XBDMType",
 
 	# functions
+	"is_int",
+	"xbdm_to_local_path",
+	"xbdm_to_device_path",
+	"system_time",
+	"creation_time_to_file_time",
+	"modify_time_to_file_time",
+	"uint32_to_uint64",
+	"uint64_to_uint32",
 	"dw_from_sz",
 	"pch_get_param",
 	"get_param",

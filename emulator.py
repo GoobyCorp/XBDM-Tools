@@ -3,15 +3,12 @@
 import asyncio
 from io import BytesIO
 from enum import IntEnum
-from pathlib import Path
 from shutil import rmtree
 from json import load, dump
-from calendar import timegm
 from typing import BinaryIO
 from struct import unpack, pack
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
-from datetime import datetime, timedelta, tzinfo
 from ctypes import Structure, Union, c_ulong, c_uint32, c_int32, c_uint64, c_int64
 
 from xbdm_common import *
@@ -23,25 +20,11 @@ D3DFMT_A2R10G10B10 = 0x18280192
 # ctypes aliases
 c_dword = c_ulong
 
-# xbdm variables
-XBDM_PORT = 730
-XBDM_DIR = "DEVICES"
-
 # config variables
 CONFIG_FILE = "config.json"
 
-# JRPC2 variables - Byrom
-JRPC2_CONFIG_FILE = "jrpc2_config.json"
-
-# time variables
-EPOCH_AS_FILETIME = 116444736000000000
-HUNDREDS_OF_NANOSECONDS = 10000000
-ZERO = timedelta(0)
-HOUR = timedelta(hours=1)
-
 # config
 cfg: list | dict = {}
-jrpc2cfg: list | dict = {}
 
 # Responses from the console are high to low
 # PC data is read from low to high
@@ -99,98 +82,6 @@ def list_files(path: str) -> tuple | list:
 
 def list_drives() -> (list, tuple):
 	return list_dirs("DEVICES/Harddisk0/Partition1/")
-
-def xbdm_to_local_path(path: str) -> str:
-	p = Path("DEVICES/Harddisk0/Partition1/")
-	p /= path.replace(":\\", "/").replace("\\", "/")
-	p = p.absolute()
-	p.parent.mkdir(parents=True, exist_ok=True)
-	return str(p)
-
-	# return join("DEVICES/Harddisk0/Partition1/", path.replace(":\\", "/").replace("\\", "/")).replace("\\", "/")
-
-def xbdm_to_device_path(path: str) -> str:
-	if path.startswith("\\Device\\"):
-		path = path[len("\\Device\\"):]
-	elif path.startswith("\\"):
-		path = path[1:]
-
-	p = Path(XBDM_DIR)
-	p /= path.replace(":\\", "/").replace("\\", "/")
-	p = p.absolute()
-	p.parent.mkdir(parents=True, exist_ok=True)
-	return str(p)
-
-def format_command(command: bytes | bytearray, lowercase: bool = False):
-	command =  command.decode("utf8").rstrip()
-	if lowercase:
-		command = command.lower()
-	return command
-
-def bswap32(b: bytes | bytearray) -> bytes | bytearray:
-	if len(b) % 4 == 0:
-		return b"".join([bytes([b[x + 3], b[x + 2], b[x + 1], b[x]]) for x in range(0, len(b), 4)])
-
-def uint32_to_uint64(low: str | int, high: str | int) -> int:
-	if isinstance(low, str):
-		low = unpack("!I", bytes.fromhex(low.replace("0x", "")))[0]
-	if isinstance(high, str):
-		high = unpack("!I", bytes.fromhex(high.replace("0x", "")))[0]
-	return unpack("<Q", pack("<II", low, high))[0]
-
-def uint64_to_uint32(num: int, as_hex: bool = False, as_bytes: bool = False) -> tuple | list:
-	i = unpack("<II", pack("<Q", num))
-	if as_hex:
-		low = "0x" + pack("!I", i[0]).hex()
-		high = "0x" + pack("!I", i[1]).hex()
-		if as_bytes:
-			return [bytes(low, "utf8"), bytes(high, "utf8")]
-		return [low, high]
-	return i
-
-def dt_to_filetime(dt):
-	if (dt.tzinfo is None) or (dt.tzinfo.utcoffset(dt) is None):
-		dt = dt.replace(tzinfo=UTC())
-	ft = EPOCH_AS_FILETIME + (timegm(dt.timetuple()) * HUNDREDS_OF_NANOSECONDS)
-	return ft + (dt.microsecond * 10)
-
-def filetime_to_dt(ft) -> datetime:
-	# Get seconds and remainder in terms of Unix epoch
-	(s, ns100) = divmod(ft - EPOCH_AS_FILETIME, HUNDREDS_OF_NANOSECONDS)
-	# Convert to datetime object
-	dt = datetime.utcfromtimestamp(s)
-	# Add remainder in as microseconds. Python 3.2 requires an integer
-	dt = dt.replace(microsecond=(ns100 // 10))
-	return dt
-
-def creation_time_to_file_time(path: str) -> int:
-	#dt = datetime.utcfromtimestamp(getctime(path))
-	return dt_to_filetime(datetime.utcnow())
-
-def modify_time_to_file_time(path: str) -> int:
-	#dt = datetime.utcfromtimestamp(getmtime(path))
-	return dt_to_filetime(datetime.utcnow())
-
-def system_time() -> int:
-	dt1 = datetime(1, 1, 1, 23, 0, 0)
-	dt2 = datetime.utcnow()
-	return int(abs(dt2 - dt1).total_seconds()) * 10000000
-
-def is_int(s: str) -> str | int:
-	try:
-		return int(s)
-	except:
-		return s
-
-class UTC(tzinfo):
-	def utcoffset(self, dt):
-		return ZERO
-
-	def tzname(self, dt):
-		return "UTC"
-
-	def dst(self, dt):
-		return ZERO
 
 class XBDMServerProtocol(asyncio.Protocol):
 	# file transfer variables
@@ -282,10 +173,10 @@ class XBDMServerProtocol(asyncio.Protocol):
 			return
 
 		if raw_command.endswith(b"\r\n") and not (self.receiving_file or self.receiving_files):
-			if cfg["debug"]:
+			if cfg["stock"]["debug"]:
 				print(bytes(raw_command))
 				print(raw_command.hex().upper())
-			parsed = XBDMCommand.parse(format_command(raw_command))
+			parsed = XBDMCommand.parse(raw_command)
 			match parsed.name.lower():
 				case "boxid":
 					print("Sending box ID...")
@@ -372,10 +263,10 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_single_line("200- OK")
 				case "dbgname":
 					print("Sending console name...")
-					self.send_single_line("200- " + cfg["console_name"])
+					self.send_single_line("200- " + cfg["stock"]["console_name"])
 				case "consoletype":
 					print("Sending console type...")
-					self.send_single_line("200- " + cfg["console_type"])
+					self.send_single_line("200- " + cfg["stock"]["console_type"])
 				case "consolefeatures":
 					# Basic JRPC2 Support - Byrom
 					if parsed.param_exists("ver") and parsed.param_exists("type"): # is jrpc2 command
@@ -389,7 +280,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("200- 80067F48")
 						elif type_param == 10:
 							print("JRPC2 - Get CPUKey command received! Responding...")
-							self.send_single_line("200- " + jrpc2cfg["CPUKey"])
+							self.send_single_line("200- " + cfg["jrpc2"]["CPUKey"])
 						elif type_param == 11:
 							print("JRPC2 - Shutdown console command received! Responding...")
 							self.send_single_line("200- S_OK")
@@ -400,7 +291,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 							self.send_single_line("200- S_OK")
 						elif type_param == 13:
 							print("JRPC2 - Get Kern Version command received! Responding...")
-							self.send_single_line("200- " + jrpc2cfg["KernelVers"])
+							self.send_single_line("200- " + cfg["jrpc2"]["KernelVers"])
 						elif type_param == 14:
 							print("JRPC2 - Set ROL LED command received! Responding...") # multple options for this green red orange topleft topright bottomleft bottomright
 							self.send_single_line("200- S_OK")
@@ -409,22 +300,22 @@ class XBDMServerProtocol(asyncio.Protocol):
 							print(gettemp_params)
 							if gettemp_params == "A\\0\\A\\1\\1\\0\\":
 								print("JRPC2 - Get CPU Temperature command received! Responding...")
-								self.send_single_line("200- " + hex(jrpc2cfg["CPUTemp"]).replace("0x", ""))
+								self.send_single_line("200- " + hex(cfg["jrpc2"]["CPUTemp"]).replace("0x", ""))
 							elif gettemp_params == "A\\0\\A\\1\\1\\1\\":
 								print("JRPC2 - Get GPU Temperature command received! Responding...")
-								self.send_single_line("200- " + hex(jrpc2cfg["GPUTemp"]).replace("0x", ""))
+								self.send_single_line("200- " + hex(cfg["jrpc2"]["GPUTemp"]).replace("0x", ""))
 							elif gettemp_params == "A\\0\\A\\1\\1\\2\\":
 								print("JRPC2 - Get EDRAM Temperature command received! Responding...")
-								self.send_single_line("200- " + hex(jrpc2cfg["EDRAMTemp"]).replace("0x", ""))
+								self.send_single_line("200- " + hex(cfg["jrpc2"]["EDRAMTemp"]).replace("0x", ""))
 							elif gettemp_params == "A\\0\\A\\1\\1\\3\\":
 								print("JRPC2 - Get MOBO Temperature command received! Responding...")
-								self.send_single_line("200- " + hex(jrpc2cfg["MOBOTemp"]).replace("0x", ""))
+								self.send_single_line("200- " + hex(cfg["jrpc2"]["MOBOTemp"]).replace("0x", ""))
 						elif type_param == 16:
 							print("JRPC2 - Get TitleID command received! Responding...")
-							self.send_single_line("200- " + jrpc2cfg["TitleID"])
+							self.send_single_line("200- " + cfg["jrpc2"]["TitleID"])
 						elif type_param == 17:
 							print("JRPC2 - Get Mobo Type command received! Responding...")
-							self.send_single_line("200- " + jrpc2cfg["MoboType"])
+							self.send_single_line("200- " + cfg["jrpc2"]["MoboType"])
 						elif type_param == 18:
 							print("JRPC2 - Constant memory setting command received! Responding...")
 							self.send_single_line("200- S_OK")
@@ -438,14 +329,14 @@ class XBDMServerProtocol(asyncio.Protocol):
 							print("Feature Params: " + parsed.get_param("params"))
 							self.send_single_line("200- S_OK")
 						else:  #simple query
-							self.send_single_line("200- " + cfg["console_type"])
+							self.send_single_line("200- " + cfg["stock"]["console_type"])
 				case "advmem":
 					if parsed.flag_exists("status"):
 						print("Sending memory properties...")
 						self.send_single_line("200- enabled")
 				case "altaddr":
 					print("Sending title IP address...")
-					addr = bytes(map(int, cfg["alternate_address"].split('.'))).hex()
+					addr = bytes(map(int, cfg["stock"]["alternate_address"].split('.'))).hex()
 					self.send_single_line("200- addr=0x" + addr)
 				case "systime":
 					print("Sending system time...")
@@ -459,10 +350,10 @@ class XBDMServerProtocol(asyncio.Protocol):
 				case "systeminfo":
 					print("Sending system info...")
 					lines = [
-						"HDD=" + "Enabled" if cfg["hdd_enabled"] else "Disabled",
-						"Type=" + cfg["console_type"],
-						f"Platform={cfg['platform']} System={cfg['system']}",
-						f"BaseKrnl={cfg['base_kernel']} Krnl={cfg['kernel']} XDK={cfg['xdk']}"
+						"HDD=" + "Enabled" if cfg["stock"]["hdd_enabled"] else "Disabled",
+						"Type=" + cfg["stock"]["console_type"],
+						f"Platform={cfg['stock']['platform']} System={cfg['stock']['system']}",
+						f"BaseKrnl={cfg['stock']['base_kernel']} Krnl={cfg['stock']['kernel']} XDK={cfg['stock']['xdk']}"
 					]
 					self.send_multi_line(lines)
 				case "xbeinfo":
@@ -470,7 +361,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 						print("Sending current title info...")
 						lines = [
 							"timestamp=0x00000000 checksum=0x00000000",
-							f"name=\"{cfg['current_title_path']}\""
+							f"name=\"{cfg['stock']['current_title_path']}\""
 						]
 						self.send_multi_line(lines)
 				case "screenshot":
@@ -494,7 +385,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					# pitch
 					p = ow * 4
 
-					with open(cfg["screenshot_file"], "rb") as f:
+					with open(cfg["stock"]["screenshot_file"], "rb") as f:
 						# read and send the file
 						data = f.read()
 
@@ -516,7 +407,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_multi_line([f"drivename=\"{x}\"" for x in list_drives()])
 				case "isdebugger":
 					print("Requesting is debugger...")
-					self.send_single_line("410- name=\"XRPC\" user=" + cfg["username"])
+					self.send_single_line("410- name=\"XRPC\" user=" + cfg["stock"]["username"])
 				case "break":
 					if parsed.flag_exists("clearall"):
 						print("Removing all breakpoints...")
@@ -524,7 +415,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 				case "modules":
 					print("Sending module listing...")
 					lines = []
-					for single in cfg["modules"]:
+					for single in cfg["stock"]["modules"]:
 						with XBDMCommand() as cmd:
 							cmd.set_param("name", single["name"], XBDMType.QUOTED_STRING)
 							cmd.set_param("base", single["base"], XBDMType.DWORD)
@@ -559,7 +450,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					if parsed.get_param("NAME"):
 						drive_label = parsed.get_param("NAME")
 						print(f"Requesting free space for drive label {drive_label}...")
-						(low, high) = uint64_to_uint32(cfg["console_hdd_size"], True, True)
+						(low, high) = uint64_to_uint32(cfg["stock"]["console_hdd_size"], True, True)
 						with XBDMCommand() as cmd:
 							cmd.set_param("freetocallerlo", low, XBDMType.DWORD)
 							cmd.set_param("freetocallerhi", high, XBDMType.DWORD)
@@ -830,28 +721,27 @@ async def xbdm_emulator_server():
 		await server.serve_forever()
 
 def main() -> int:
-	global cfg, jrpc2cfg
+	global cfg
 
 	if isfile(CONFIG_FILE):
 		cfg = load(open(CONFIG_FILE, "r"))
 	else:
-		cfg = {"xbdm_dir": "XBDM"}
-		dump(cfg, open(CONFIG_FILE, "w"))
-
-	if isfile(JRPC2_CONFIG_FILE):
-		jrpc2cfg = load(open(JRPC2_CONFIG_FILE, "r"))
-	else:
-		jrpc2cfg = {
-			"MoboType": "Trinity",
-			"CPUKey": "13371337133713371337133713371337",
-			"KernelVers": "17559",
-			"TitleID": "FFFE07D1",
-			"CPUTemp": 45,
-			"GPUTemp": 44,
-			"EDRAMTemp": 43,
-			"MOBOTemp": 39
+		cfg = {
+			"stock": {
+				"xbdm_dir": "XBDM"
+			},
+			"jrpc2": {
+				"MoboType": "Trinity",
+				"CPUKey": "13371337133713371337133713371337",
+				"KernelVers": "17559",
+				"TitleID": "FFFE07D1",
+				"CPUTemp": 45,
+				"GPUTemp": 44,
+				"EDRAMTemp": 43,
+				"MOBOTemp": 39
+			}
 		}
-		dump(jrpc2cfg, open(JRPC2_CONFIG_FILE, "w"))
+		dump(cfg, open(CONFIG_FILE, "w"))
 
 	print(f"XBDM emulator running on 0.0.0.0:{XBDM_PORT}!")
 	asyncio.run(xbdm_emulator_server())
