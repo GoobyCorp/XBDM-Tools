@@ -2,14 +2,13 @@
 
 import asyncio
 from io import BytesIO
-from enum import IntEnum
 from shutil import rmtree
 from json import load, dump
 from typing import BinaryIO
 from struct import unpack, pack
+from ctypes import c_uint32, c_uint64
 from os import walk, rename, remove, makedirs
 from os.path import isfile, isdir, join, getsize
-from ctypes import Structure, Union, c_ulong, c_uint32, c_int32, c_uint64, c_int64
 
 from xbdm_common import *
 
@@ -18,7 +17,8 @@ D3DFMT_A8R8G8B8 = 0x18280186
 D3DFMT_A2R10G10B10 = 0x18280192
 
 # ctypes aliases
-c_dword = c_ulong
+DWORD = c_uint32
+QWORD = c_uint64
 
 # config variables
 CONFIG_FILE = "config.json"
@@ -30,49 +30,6 @@ cfg: list | dict = {}
 # PC data is read from low to high
 # Big Endian    = high -> low
 # Little Endian = low -> high
-
-class INT64_PART(Structure):
-	_pack_ = 1
-	_fields_ = [
-		("Low", c_int32),
-		("High", c_int32)
-	]
-
-class UINT64_PART(Structure):
-	_pack_ = 1
-	_fields_ = [
-		("Low", c_uint32),
-		("High", c_uint32)
-	]
-
-class INT64(Union):
-	_pack_ = 1
-	_fields_ = [
-		("a", INT64_PART),
-		("Quad", c_int64)
-	]
-
-class UINT64(Union):
-	_pack_ = 1
-	_fields_ = [
-		("a", UINT64_PART),
-		("Quad", c_uint64)
-	]
-
-class FileInfo(Structure):
-	_fields_ = [
-		("dwSize", c_uint32),
-		("CreateTime", INT64),
-		("ChangeTime", INT64),
-		("FileSize", INT64),
-		("FileAttributes", c_uint32)
-	]
-
-class ReceiveFileType(IntEnum):
-	NONE = 0
-	XBUPDATE_SINGLE = 1
-	SENDFILE_SINGLE = 2
-	SENDVFILE_MULTIPLE = 3
 
 def list_dirs(path: str) -> tuple | list:
 	return next(walk(path))[1]
@@ -96,7 +53,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 	file_data_left: int = 0
 
 	# both
-	receiving_type: ReceiveFileType = ReceiveFileType.NONE
+	receiving_type: XBDMReceiveFileType = XBDMReceiveFileType.NONE
 	file_path: str = ""
 	file_handle: BinaryIO | None = None
 
@@ -117,7 +74,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 		self.file_data_left = 0
 
 		# both
-		self.receiving_type = ReceiveFileType.NONE
+		self.receiving_type = XBDMReceiveFileType.NONE
 		self.file_path = ""
 		self.file_handle = None
 
@@ -227,7 +184,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 						self.file_data_left = file_size
 						self.file_cksm = parsed.get_param("crc")
 						self.receiving_file = True
-						self.receiving_type = ReceiveFileType.XBUPDATE_SINGLE
+						self.receiving_type = XBDMReceiveFileType.XBUPDATE_SINGLE
 						self.file_path = file_path
 					elif not parsed.param_exists("localsrc"):
 						print(f"Modifying file \"{file_name}\"...")
@@ -550,7 +507,7 @@ class XBDMServerProtocol(asyncio.Protocol):
 					self.send_single_line("204- send binary data")
 					self.file_data_left = file_size
 					self.receiving_file = True
-					self.receiving_type = ReceiveFileType.SENDFILE_SINGLE
+					self.receiving_type = XBDMReceiveFileType.SENDFILE_SINGLE
 					self.file_path = xbdm_to_device_path(file_name)
 				case "rename":
 					if parsed.param_exists("NAME") and parsed.param_exists("NEWNAME"):
@@ -658,12 +615,12 @@ class XBDMServerProtocol(asyncio.Protocol):
 				self.file_path = ""
 				self.receiving_file = False
 
-				if self.receiving_type == ReceiveFileType.SENDFILE_SINGLE:
+				if self.receiving_type == XBDMReceiveFileType.SENDFILE_SINGLE:
 					self.send_single_line("203- binary response follows")
 					self.transport.write((b"\x00" * 4))
-				elif self.receiving_type == ReceiveFileType.XBUPDATE_SINGLE:
+				elif self.receiving_type == XBDMReceiveFileType.XBUPDATE_SINGLE:
 					self.send_single_line("200- OK")
-				self.receiving_type = ReceiveFileType.NONE
+				self.receiving_type = XBDMReceiveFileType.NONE
 		elif self.receiving_files:
 			if self.num_files_left > 0 and self.file_handle is None and self.file_data_left == 0:  # process header and first file bit
 				# print("Size:", len(raw_command))

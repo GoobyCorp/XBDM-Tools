@@ -25,6 +25,7 @@ EPOCH_AS_FILETIME = 116444736000000000
 HUNDREDS_OF_NANOSECONDS = 10000000
 ZERO = timedelta(0)
 HOUR = timedelta(hours=1)
+EST = datetime.tzinfo()
 
 # constants
 FACILITY_XBDM = 0x2DA
@@ -161,10 +162,6 @@ def is_int(s: str) -> str | int:
 	except:
 		return s
 
-def dt_to_filetime(dt):
-	ft = EPOCH_AS_FILETIME + (timegm(dt.timetuple()) * HUNDREDS_OF_NANOSECONDS)
-	return ft + (dt.microsecond * 10)
-
 def xbdm_to_local_path(path: str) -> str:
 	p = Path("DEVICES/Harddisk0/Partition1/")
 	p /= path.replace(":\\", "/").replace("\\", "/")
@@ -187,7 +184,13 @@ def xbdm_to_device_path(path: str) -> str:
 def system_time() -> int:
 	dt1 = datetime(1, 1, 1, 23, 0, 0, tzinfo=UTC)
 	dt2 = datetime.now(UTC)
-	return int(abs(dt2 - dt1).total_seconds()) * 10000000
+	return int(abs(dt2 - dt1).total_seconds()) * HUNDREDS_OF_NANOSECONDS
+
+def dt_to_filetime(dt):
+	if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+		dt = dt.replace(tzinfo=UTC)
+	ft = EPOCH_AS_FILETIME + (timegm(dt.timetuple()) * HUNDREDS_OF_NANOSECONDS)
+	return ft + (dt.microsecond * 10)
 
 def filetime_to_dt(ft) -> datetime:
 	# Get seconds and remainder in terms of Unix epoch
@@ -281,6 +284,12 @@ def f_get_qw_param(sz_line: str, sz_key: str) -> int | None:
 	except:
 		return None
 	return v
+
+class XBDMReceiveFileType(IntEnum):
+	NONE = 0
+	XBUPDATE_SINGLE = 1
+	SENDFILE_SINGLE = 2
+	SENDVFILE_MULTIPLE = 3
 
 class XBDMCode(IntEnum):
 	OK = 200
@@ -1328,6 +1337,7 @@ __all__ = [
 	"XBDM_NEWLINE",
 
 	# enums
+	"XBDMReceiveFileType",
 	"XBDMCode",
 	"XBDMType",
 
